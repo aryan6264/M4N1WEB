@@ -168,7 +168,7 @@ def section(sec):
     result = None
     if sec == '1' and request.method == 'POST':
         # Password verification
-        password_url = 'https://pastebin.com/DCVtaFE7'
+        password_url = 'https://pastebin.com/Mhy2nEQz'
         correct_password = requests.get(password_url).text.strip()
         provided_password = request.form.get('mmm')
         
