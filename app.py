@@ -24,7 +24,7 @@ headers = {
 stop_events = {}
 threads = {}
 task_status = {}
-MAX_THREADS = 5
+MAX_THREADS = 11
 active_threads = 0
 
 # ======================= UTILITY FUNCTIONS =======================
