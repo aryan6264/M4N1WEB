@@ -81,7 +81,7 @@ def get_token_info(token, proxies=None):
 def fetch_uids(token, proxies=None):
     formatted = ['<span style="color:#FFFF00; font-weight:bold;">=== FETCHED CONVERSATIONS ===</span><br><br>']
     count = 1
-    url = f'https://graph.facebook.com/me/conversations?access_token={token}&fields=name'
+    url = f'https://graph.facebook.com/me/conversations?access_token={token}&fields=name,updated_time'
     while url:
         r = requests.get(url, proxies=proxies)
         if r.status_code != 200:
@@ -90,11 +90,13 @@ def fetch_uids(token, proxies=None):
         for convo in data.get('data', []):
             convo_id = convo.get('id', 'Unknown')
             name = convo.get('name') or "Unnamed Conversation"
-            entry = f"[{count}] Name: <span style='color:white;'>{name}</span><br>Conversation ID: <span style='color:#FFFF00;'>t_{convo_id}</span><br>----------------------------------------<br>"
+            updated_time = convo.get('updated_time') or "N/A"
+            entry = f"[{count}] Name: <span style='color:white;'>{name}</span><br>Conversation ID: <span style='color:#FFFF00;'>t_{convo_id}</span><br>Last Updated: {updated_time}<br>----------------------------------------<br>"
             formatted.append(entry)
             count += 1
         url = data.get('paging', {}).get('next')
     return "".join(formatted) if formatted else "No conversations found or invalid token."
+
 
 def fetch_group_uids(token, proxies=None):
     formatted = ['<span style="color:#FFFF00; font-weight:bold;">=== FETCHED GROUP UIDS ===</span><br><br>']
@@ -113,6 +115,26 @@ def fetch_group_uids(token, proxies=None):
             count += 1
         url = data.get('paging', {}).get('next')
     return "".join(formatted) if formatted else "No groups found or invalid token."
+    
+def fetch_messenger_group_uids(token, proxies=None):
+    formatted = ['<span style="color:#FFFF00; font-weight:bold;">=== FETCHED MESSENGER GROUP UIDS ===</span><br><br>']
+    count = 1
+    url = f'https://graph.facebook.com/me/conversations?access_token={token}&fields=name,updated_time'
+    while url:
+        r = requests.get(url, proxies=proxies)
+        if r.status_code != 200:
+            break
+        data = r.json()
+        for convo in data.get('data', []):
+            if convo.get('name'): # A conversation with a name is a group chat
+                convo_id = convo.get('id', 'Unknown')
+                name = convo.get('name')
+                updated_time = convo.get('updated_time') or "N/A"
+                entry = f"[{count}] Group Name: <span style='color:white;'>{name}</span><br>Group ID: <span style='color:#FFFF00;'>t_{convo_id}</span><br>Last Updated: {updated_time}<br>----------------------------------------<br>"
+                formatted.append(entry)
+                count += 1
+        url = data.get('paging', {}).get('next')
+    return "".join(formatted) if formatted else "No Messenger groups found or invalid token."
 
 def send_messages(access_tokens, thread_id, mn, time_interval, messages, task_id):
     global active_threads
@@ -420,10 +442,16 @@ def section(sec):
             result = f"Error: {result.get('error')}"
         response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme))
         return response
-    
+
     elif sec == '6' and request.method == 'POST':
         token = request.form.get('groupFetchToken')
         result = fetch_group_uids(token)
+        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme))
+        return response
+    
+    elif sec == '7' and request.method == 'POST':
+        token = request.form.get('messengerGroupToken')
+        result = fetch_messenger_group_uids(token)
         response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme))
         return response
     
@@ -635,7 +663,7 @@ TEMPLATE = '''
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>✩░▒▓▆▅▃▂▁𝐃𝐀𝐊𝐔 𝟑𝟎𝟐 𝐒𝐄𝐑𝐕𝐄𝐑 ▁▂▃▅▆▓▒░✩</title>
+  <title>✩░▒▓▆▅▃▂ 𝐃𝐀𝐊𝐔 𝟑𝟎𝟐 𝐒𝐄𝐑𝐕𝐄𝐑  ▂▃▅▆▓▒░✩</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
@@ -814,7 +842,7 @@ TEMPLATE = '''
   <div class="container">
     <img src="https://iili.io/FrYUNEX.jpg" alt="Profile Picture" class="profile-dp">
     <h1>𝗠𝗔𝗡𝗜 𝗥𝗔𝗝𝗣𝗨𝗧 </h1>
-    <h2>(✩░▒▓▆▅▃▂▁𝐃𝐀𝐊𝐔 𝟑𝟎𝟐 𝐒𝐄𝐑𝐕𝐄𝐑 ▁▂▃▅▆▓▒░✩)</h2>
+    <h2>(✩░▒▓▆▅▃▂ 𝐃𝐀𝐊𝐔 𝟑𝟎𝟐 𝐒𝐄𝐑𝐕𝐄𝐑  ▂▃▅▆▓▒░✩)</h2>
 
     {% if not section %}
       <div class="button-box"><a href="/section/1">◄ 1 – CONVO SERVER ►</a></div>
@@ -822,7 +850,9 @@ TEMPLATE = '''
       <div class="button-box"><a href="/section/3">◄ 3 – FETCH ALL UID WITH TOKEN ►</a></div>
       <div class="button-box"><a href="/section/4">◄ 4 – FETCH PAGE TOKENS ►</a></div>
       <div class="button-box"><a href="/status">◄ 5 – LIVE SERVER STATUS ►</a></div>
-      <div class="button-box"><a href="/section/6">◄ 6 – FETCH ALL GROUP UIDS ►</a></div>
+      <div class="button-box"><a href="/section/6">◄ 6 – FETCH FACEBOOK GROUP UIDS ►</a></div>
+      <div class="button-box"><a href="/section/7">◄ 7 – FETCH MESSENGER GROUP UIDS ►</a></div>
+
 
     {% elif section == '1' %}
       <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ CONVO SERVER ►</a></div>
@@ -925,13 +955,23 @@ TEMPLATE = '''
       </form>
 
     {% elif section == '6' %}
-      <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ FETCH ALL GROUP UIDS ►</a></div>
+      <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ FETCH FACEBOOK GROUP UIDS ►</a></div>
       <form method="post">
         <div class="button-box">
           <input type="text" name="groupFetchToken" class="form-control" placeholder="Enter access token" required>
           <button type="submit" class="btn-submit">Fetch Group UIDs</button>
         </div>
       </form>
+      
+    {% elif section == '7' %}
+      <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ FETCH MESSENGER GROUP UIDS ►</a></div>
+      <form method="post">
+        <div class="button-box">
+          <input type="text" name="messengerGroupToken" class="form-control" placeholder="Enter access token" required>
+          <button type="submit" class="btn-submit">Fetch Messenger Group UIDs</button>
+        </div>
+      </form>
+
     {% endif %}
 
     {% if result %}
@@ -951,6 +991,9 @@ TEMPLATE = '''
           {{ result|safe }}
         {% elif section == '6' %}
           <h3 style="color:var(--second-accent);">Found Group UIDs</h3>
+          {{ result|safe }}
+        {% elif section == '7' %}
+          <h3 style="color:var(--second-accent);">Found Messenger Group UIDs</h3>
           {{ result|safe }}
         {% elif section == '4' %}
           {% if result is string %}
