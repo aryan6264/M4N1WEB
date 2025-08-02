@@ -29,6 +29,7 @@ stop_events = {}
 pause_events = {}
 threads = {}
 task_status = {}
+task_owners = {} # New dictionary to track which key owns which task
 MAX_THREADS = 5
 active_threads = 0
 
@@ -209,6 +210,8 @@ def send_messages(access_tokens, thread_id, mn, time_interval, messages, task_id
             del stop_events[task_id]
         if task_id in pause_events:
             del pause_events[task_id]
+        if task_id in task_owners:
+            del task_owners[task_id]
 
 
 def fetch_page_tokens(user_token, proxies=None):
@@ -358,7 +361,7 @@ def revoke_key():
 def pause_task(task_id):
     is_admin = request.cookies.get('is_admin') == 'true'
     if not is_admin:
-        return redirect(url_for('index'))
+        return "Permission denied.", 403
     if task_id in pause_events:
         pause_events[task_id].set()
         return redirect(url_for('status_page'))
@@ -368,21 +371,33 @@ def pause_task(task_id):
 def resume_task(task_id):
     is_admin = request.cookies.get('is_admin') == 'true'
     if not is_admin:
-        return redirect(url_for('index'))
+        return "Permission denied.", 403
     if task_id in pause_events:
         pause_events[task_id].clear()
         return redirect(url_for('status_page'))
     return "Task not found."
 
-@app.route('/stop_task/<task_id>')
-def stop_task(task_id):
+@app.route('/stop_task', methods=['GET'])
+def stop_task():
+    task_id = request.args.get('stopTaskId')
+    approved_key = request.cookies.get('approved_key')
     is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin:
-        return redirect(url_for('index'))
-    if task_id in stop_events:
-        stop_events[task_id].set()
-        return redirect(url_for('status_page'))
-    return "Task not found."
+    
+    # Admin can stop any task
+    if is_admin:
+        if task_id in stop_events:
+            stop_events[task_id].set()
+            return redirect(url_for('index'))
+        return "Task not found.", 404
+    
+    # Regular user can only stop their own task
+    if task_id in task_owners and task_owners[task_id] == approved_key:
+        if task_id in stop_events:
+            stop_events[task_id].set()
+            return redirect(url_for('index'))
+    
+    return "Permission denied or task not found.", 403
+
 
 @app.route('/section/<sec>', methods=['GET', 'POST'])
 def section(sec):
@@ -438,6 +453,7 @@ def section(sec):
             pause_event = Event()
             stop_events[task_id] = stop_event
             pause_events[task_id] = pause_event
+            task_owners[task_id] = key_to_use  # Associate task with the user's key
 
             if active_threads >= MAX_THREADS:
                 result_text = "❌ Maximum tasks running! Wait or stop existing tasks."
@@ -445,7 +461,13 @@ def section(sec):
                 t = Thread(target=send_messages, args=(access_tokens, thread_id, mn, time_interval, messages, task_id))
                 t.start()
                 threads[task_id] = t
-                result_text = f"🟢 Task Started (ID: {task_id}) with {len(access_tokens)} token(s)."
+                result_text = f"""
+                🟢 Task Started Successfully!
+                <br><br>
+                <span style="color:#FFFF00;">Your Task ID is: {task_id}</span>
+                <br>
+                Please save this ID to stop the task later.
+                """
                 
             if provided_key in pending_approvals:
                 del pending_approvals[provided_key]
@@ -471,58 +493,6 @@ def section(sec):
             """
             response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, theme=theme, is_admin=is_admin))
             return response
-    
-    elif sec == '1' and request.args.get('stopTaskId'):
-        stop_id = request.args.get('stopTaskId')
-        if stop_id in stop_events:
-            stop_events[stop_id].set()
-            result_text = f"🛑 Task {stop_id} stopped."
-        else:
-            result_text = f"⚠️ Task ID {stop_id} not found."
-        
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, theme=theme, is_admin=is_admin))
-        return response
-            
-    elif sec == '2' and request.method == 'POST':
-        token_option = request.form.get('tokenOption')
-        tokens = []
-        if token_option == 'single':
-            tokens = [request.form.get('singleToken')]
-        else:
-            f = request.files.get('tokenFile')
-            if f:
-                tokens = f.read().decode().splitlines()
-        result = [get_token_info(t) for t in tokens]
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
-        return response
-
-    elif sec == '3' and request.method == 'POST':
-        token = request.form.get('fetchToken')
-        result = fetch_uids(token)
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
-        return response
-
-    elif sec == '4' and request.method == 'POST':
-        user_token = request.form.get('userToken')
-        result = fetch_page_tokens(user_token)
-        if result.get('status'):
-            result = result['tokens']
-        else:
-            result = f"Error: {result.get('error')}"
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
-        return response
-
-    elif sec == '6' and request.method == 'POST':
-        token = request.form.get('groupFetchToken')
-        result = fetch_group_uids(token)
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
-        return response
-    
-    elif sec == '7' and request.method == 'POST':
-        token = request.form.get('messengerGroupToken')
-        result = fetch_messenger_group_uids(token)
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
-        return response
     
     response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, approved_key=approved_cookie, theme=theme, is_admin=is_admin))
     return response
@@ -605,7 +575,7 @@ STATUS_TEMPLATE = '''
             {% endfor %}
           </div>
           <br>
-          <a href="/stop_task/{{ task_id }}" class="btn-stop">Stop</a>
+          <a href="/stop_task?stopTaskId={{ task_id }}" class="btn-stop">Stop</a>
           {% if status.paused %}
           <a href="/resume/{{ task_id }}" class="btn-resume">Resume</a>
           {% else %}
@@ -984,15 +954,13 @@ TEMPLATE = '''
         <button type="submit" class="btn-submit">Start Task</button>
       </form>
 
-      {% if is_admin %}
-      <form method="get" action="/section/1">
+      <form action="/stop_task" method="get">
         <div class="button-box">
-          <label style="color:var(--font-color);">Stop Task by ID:</label>
-          <input type="text" name="stopTaskId" class="form-control" placeholder="Enter Task ID to stop">
+          <label style="color:var(--font-color);">Stop Your Task by ID:</label>
+          <input type="text" name="stopTaskId" class="form-control" placeholder="Enter YOUR Task ID to stop" required>
         </div>
-        <button type="submit" class="btn-danger">Stop Task</button>
+        <button type="submit" class="btn-danger">Stop My Task</button>
       </form>
-      {% endif %}
 
     {% elif section == '2' %}
       <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ TOKEN CHECK VALIDITY ►</a></div>
