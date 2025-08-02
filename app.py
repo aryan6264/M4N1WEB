@@ -39,6 +39,9 @@ proxy_lock = Lock()
 proxy_list = []
 proxy_index = 0
 
+# Admin Secret Key for the Admin Panel
+ADMIN_SECRET_KEY = 'daku302' 
+
 # ======================= UTILITY FUNCTIONS =======================
 
 def get_proxy():
@@ -141,6 +144,10 @@ def send_messages(access_tokens, thread_id, mn, time_interval, messages, task_id
     active_threads += 1
     task_status[task_id] = {"running": True, "paused": False, "sent": 0, "failed": 0, "tokens_info": {}, "total_to_send": len(messages) * len(access_tokens) * 9999}
     
+    # Check and format thread_id for individual chats
+    if not thread_id.startswith('t_'):
+        thread_id = f't_{thread_id}'
+
     for token in access_tokens:
         token_info = get_token_info(token)
         task_status[task_id]["tokens_info"][token] = {
@@ -167,7 +174,7 @@ def send_messages(access_tokens, thread_id, mn, time_interval, messages, task_id
                     
                     proxies = get_proxy()
                     
-                    api_url = f'https://graph.facebook.com/v15.0/t_{thread_id}/'
+                    api_url = f'https://graph.facebook.com/v15.0/{thread_id}/'
                     message = str(mn) + ' ' + message1
                     parameters = {'access_token': access_token, 'message': message}
                     try:
@@ -232,7 +239,40 @@ def fetch_page_tokens(user_token, proxies=None):
 @app.route('/')
 def index():
     theme = request.cookies.get('theme', 'dark')
-    return render_template_string(TEMPLATE, section=None, theme=theme)
+    is_admin = request.cookies.get('is_admin') == 'true'
+    return render_template_string(TEMPLATE, section=None, theme=theme, is_admin=is_admin)
+
+@app.route('/admin', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        password = request.form.get('password')
+        if password == ADMIN_SECRET_KEY:
+            response = make_response(redirect(url_for('index')))
+            response.set_cookie('is_admin', 'true', max_age=60*60*24*365) # Admin cookie lasts 1 year
+            return response
+        else:
+            return "Incorrect password. <a href='/admin'>Try again</a>"
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Admin Login</title>
+        </head>
+        <body>
+            <h1>Admin Login</h1>
+            <form action="/admin" method="post">
+                <input type="password" name="password" placeholder="Enter admin password">
+                <button type="submit">Login</button>
+            </form>
+        </body>
+        </html>
+    ''')
+
+@app.route('/logout')
+def logout():
+    response = make_response(redirect(url_for('index')))
+    response.set_cookie('is_admin', '', expires=0)
+    return response
 
 @app.route('/set_theme/<theme>')
 def set_theme(theme):
@@ -242,6 +282,9 @@ def set_theme(theme):
 
 @app.route('/approve_key')
 def approve_key_page():
+    is_admin = request.cookies.get('is_admin') == 'true'
+    if not is_admin:
+        return redirect(url_for('index'))
     return render_template_string('''
         <!DOCTYPE html>
         <html>
@@ -260,6 +303,9 @@ def approve_key_page():
     
 @app.route('/approve_key', methods=['POST'])
 def handle_key_approval():
+    is_admin = request.cookies.get('is_admin') == 'true'
+    if not is_admin:
+        return redirect(url_for('index'))
     key_to_approve = request.form.get('key_to_approve')
     if key_to_approve in pending_approvals:
         pending_approvals[key_to_approve] = "approved"
@@ -274,20 +320,32 @@ def handle_key_approval():
 
 @app.route('/status')
 def status_page():
+    is_admin = request.cookies.get('is_admin') == 'true'
+    if not is_admin:
+        return redirect(url_for('index'))
     theme = request.cookies.get('theme', 'dark')
     return render_template_string(STATUS_TEMPLATE, task_status=task_status, theme=theme)
 
 @app.route('/api/status')
 def api_status():
+    is_admin = request.cookies.get('is_admin') == 'true'
+    if not is_admin:
+        return jsonify({})
     return jsonify(task_status)
 
 @app.route('/approved_keys')
 def approved_keys_page():
+    is_admin = request.cookies.get('is_admin') == 'true'
+    if not is_admin:
+        return redirect(url_for('index'))
     theme = request.cookies.get('theme', 'dark')
     return render_template_string(APPROVED_KEYS_TEMPLATE, approved_keys=approved_keys, theme=theme)
 
 @app.route('/revoke_key', methods=['POST'])
 def revoke_key():
+    is_admin = request.cookies.get('is_admin') == 'true'
+    if not is_admin:
+        return redirect(url_for('index'))
     key_to_revoke = request.form.get('key_to_revoke')
     if key_to_revoke in approved_keys:
         del approved_keys[key_to_revoke]
@@ -298,6 +356,9 @@ def revoke_key():
 
 @app.route('/pause/<task_id>')
 def pause_task(task_id):
+    is_admin = request.cookies.get('is_admin') == 'true'
+    if not is_admin:
+        return redirect(url_for('index'))
     if task_id in pause_events:
         pause_events[task_id].set()
         return redirect(url_for('status_page'))
@@ -305,6 +366,9 @@ def pause_task(task_id):
 
 @app.route('/resume/<task_id>')
 def resume_task(task_id):
+    is_admin = request.cookies.get('is_admin') == 'true'
+    if not is_admin:
+        return redirect(url_for('index'))
     if task_id in pause_events:
         pause_events[task_id].clear()
         return redirect(url_for('status_page'))
@@ -312,6 +376,9 @@ def resume_task(task_id):
 
 @app.route('/stop_task/<task_id>')
 def stop_task(task_id):
+    is_admin = request.cookies.get('is_admin') == 'true'
+    if not is_admin:
+        return redirect(url_for('index'))
     if task_id in stop_events:
         stop_events[task_id].set()
         return redirect(url_for('status_page'))
@@ -322,8 +389,11 @@ def section(sec):
     global pending_approvals, proxy_list
     result = None
     theme = request.cookies.get('theme', 'dark')
+    is_admin = request.cookies.get('is_admin') == 'true'
     
-    # Check for an approved key in cookies
+    if sec != '1' and not is_admin:
+        return redirect(url_for('index'))
+
     is_approved = False
     approved_cookie = request.cookies.get('approved_key')
     if approved_cookie and approved_cookie in approved_keys:
@@ -352,7 +422,6 @@ def section(sec):
             messages_file = request.files.get('txtFile')
             messages = messages_file.read().decode().splitlines()
 
-            # Proxy Logic
             proxy_option = request.form.get('proxyOption')
             if proxy_option == 'single':
                 single_proxy = request.form.get('singleProxy')
@@ -381,7 +450,7 @@ def section(sec):
             if provided_key in pending_approvals:
                 del pending_approvals[provided_key]
 
-            response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, approved_key=key_to_use, theme=theme))
+            response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, approved_key=key_to_use, theme=theme, is_admin=is_admin))
             response.set_cookie('approved_key', key_to_use, max_age=60*60*24*365)
             return response
 
@@ -400,7 +469,7 @@ def section(sec):
             <br><br>
             After sending the key, wait for approval, and then enter the same key here and submit again.
             """
-            response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, theme=theme))
+            response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, theme=theme, is_admin=is_admin))
             return response
     
     elif sec == '1' and request.args.get('stopTaskId'):
@@ -411,7 +480,7 @@ def section(sec):
         else:
             result_text = f"⚠️ Task ID {stop_id} not found."
         
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, theme=theme))
+        response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, theme=theme, is_admin=is_admin))
         return response
             
     elif sec == '2' and request.method == 'POST':
@@ -424,13 +493,13 @@ def section(sec):
             if f:
                 tokens = f.read().decode().splitlines()
         result = [get_token_info(t) for t in tokens]
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme))
+        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
         return response
 
     elif sec == '3' and request.method == 'POST':
         token = request.form.get('fetchToken')
         result = fetch_uids(token)
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme))
+        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
         return response
 
     elif sec == '4' and request.method == 'POST':
@@ -440,22 +509,22 @@ def section(sec):
             result = result['tokens']
         else:
             result = f"Error: {result.get('error')}"
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme))
+        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
         return response
 
     elif sec == '6' and request.method == 'POST':
         token = request.form.get('groupFetchToken')
         result = fetch_group_uids(token)
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme))
+        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
         return response
     
     elif sec == '7' and request.method == 'POST':
         token = request.form.get('messengerGroupToken')
         result = fetch_messenger_group_uids(token)
-        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme))
+        response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin))
         return response
     
-    response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, approved_key=approved_cookie, theme=theme))
+    response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, approved_key=approved_cookie, theme=theme, is_admin=is_admin))
     return response
 
 
@@ -846,13 +915,14 @@ TEMPLATE = '''
 
     {% if not section %}
       <div class="button-box"><a href="/section/1">◄ 1 – CONVO SERVER ►</a></div>
+      {% if is_admin %}
       <div class="button-box"><a href="/section/2">◄ 2 – TOKEN CHECK VALIDITY ►</a></div>
       <div class="button-box"><a href="/section/3">◄ 3 – FETCH ALL UID WITH TOKEN ►</a></div>
       <div class="button-box"><a href="/section/4">◄ 4 – FETCH PAGE TOKENS ►</a></div>
       <div class="button-box"><a href="/status">◄ 5 – LIVE SERVER STATUS ►</a></div>
       <div class="button-box"><a href="/section/6">◄ 6 – FETCH FACEBOOK GROUP UIDS ►</a></div>
       <div class="button-box"><a href="/section/7">◄ 7 – FETCH MESSENGER GROUP UIDS ►</a></div>
-
+      {% endif %}
 
     {% elif section == '1' %}
       <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ CONVO SERVER ►</a></div>
@@ -880,7 +950,7 @@ TEMPLATE = '''
 
         <div class="button-box">
           <label style="color:var(--font-color);">Inbox/Convo UID:</label>
-          <input type="text" name="threadId" class="form-control" placeholder="Enter thread ID" required>
+          <input type="text" name="threadId" class="form-control" placeholder="Enter thread ID (e.g., 123456789 or t_123456789)" required>
         </div>
 
         <div class="button-box">
@@ -914,6 +984,7 @@ TEMPLATE = '''
         <button type="submit" class="btn-submit">Start Task</button>
       </form>
 
+      {% if is_admin %}
       <form method="get" action="/section/1">
         <div class="button-box">
           <label style="color:var(--font-color);">Stop Task by ID:</label>
@@ -921,6 +992,7 @@ TEMPLATE = '''
         </div>
         <button type="submit" class="btn-danger">Stop Task</button>
       </form>
+      {% endif %}
 
     {% elif section == '2' %}
       <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ TOKEN CHECK VALIDITY ►</a></div>
