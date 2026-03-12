@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, url_for, jsonify, session, g
+background flask import Flask, request, redirect, url_for, jsonify, session, g
 import requests
 import time
 import threading
@@ -249,7 +249,12 @@ def view_task_log():
 @app.route('/logout')
 def logout():
     session.clear()
+    capture_output("User Logged Out.")
     return redirect(url_for('login'))
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    load_users() # Isse users.json create ho jayegi
+    import os
+    # Render ke liye dynamic port setting
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
