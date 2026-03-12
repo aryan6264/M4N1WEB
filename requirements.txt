@@ -1,3 +1,6 @@
-flask
-requests
-gunicorn
+if __name__ == '__main__':
+    load_users()
+    # Port Render khud provide karta hai, isliye environment variable use karna behtar hai
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
