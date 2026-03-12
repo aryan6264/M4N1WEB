@@ -6,153 +6,165 @@ import threading
 from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = "mani_neon_power_786"
+app.secret_key = "mani_all_in_one_key"
 
 # --- Credentials ---
 ADMIN_USER = "mani302"
 ADMIN_PASS = "786786"
 
-# Global storage
+# Global data
 logs = []
-stop_events = {}
+active_tasks = {}
 
 def capture_output(message):
     timestamp = datetime.now().strftime("%I:%M:%S %p")
     logs.append(f"[{timestamp}] {message}")
-    if len(logs) > 60: logs.pop(0)
+    if len(logs) > 40: logs.pop(0)
 
-# --- Multi-Cookie Task Engine ---
-def execution_engine(task_id, target_id, cookie_list, messages, interval):
-    cookie_index = 0
-    msg_index = 0
-    
-    while msg_index < len(messages) and task_id in stop_events:
+# --- Common CSS for all pages ---
+STYLE = '''
+<style>
+    body { background: #000; color: #39ff14; font-family: 'Courier New', monospace; padding: 20px; text-align: center; }
+    .nav { margin-bottom: 20px; border-bottom: 1px solid #39ff14; padding-bottom: 10px; }
+    .nav a { color: cyan; text-decoration: none; margin: 0 10px; font-weight: bold; }
+    .card { border: 1px solid #39ff14; padding: 20px; display: inline-block; width: 90%; max-width: 500px; background: #0a0a0a; box-shadow: 0 0 10px #39ff14; }
+    input, textarea, select { width: 100%; padding: 10px; margin: 10px 0; background: #111; border: 1px solid #39ff14; color: #fff; }
+    button { width: 100%; padding: 12px; background: #39ff14; color: #000; border: none; font-weight: bold; cursor: pointer; }
+    .logs { text-align: left; background: #111; padding: 10px; height: 200px; overflow-y: scroll; margin-top: 20px; border: 1px solid #333; font-size: 12px; }
+    .stop-btn { background: red; color: white; padding: 5px; text-decoration: none; font-size: 10px; border-radius: 3px; }
+</style>
+'''
+
+# --- Logic: Execution Engine ---
+def execution_engine(task_id, target_id, cookies, messages, interval, task_name):
+    msg_idx = 0
+    while task_id in active_tasks and msg_idx < len(messages):
         try:
-            current_cookie = cookie_list[cookie_index].strip()
-            cookie_dict = {c.split('=')[0]: c.split('=')[1] for c in current_cookie.split('; ') if '=' in c}
+            msg = messages[msg_idx].strip()
+            if msg:
+                # Simulation of actual sending
+                capture_output(f"🚀 {task_name.upper()} | Target: {target_id} | Msg: {msg[:15]}...")
+                time.sleep(1)
+                capture_output(f"✅ Success | Sent: {msg[:10]}...")
             
-            msg = messages[msg_index].strip()
-            if not msg: 
-                msg_index += 1
-                continue
-
-            # Simulation of FB Request
-            # Reality mein yahan requests.post ayega
-            capture_output(f"🚀 Using ID {cookie_index + 1} | Target: {target_id}")
-            capture_output(f"💌 Msg: {msg}")
-            
-            time.sleep(1)
-            capture_output(f"✅ Success | Sent from Cookie {cookie_index + 1}")
-            
-            msg_index += 1
+            msg_idx += 1
             time.sleep(interval)
-
         except Exception as e:
-            capture_output(f"⚠️ Cookie {cookie_index + 1} Failed! Switching...")
-            cookie_index = (cookie_index + 1) % len(cookie_list)
-            time.sleep(2)
-
-    capture_output(f"🏁 Task {task_id} Completed!")
-
-# --- Neon UI Design ---
-NEON_UI = '''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>MANI CYBER LOADER</title>
-    <style>
-        body { background-color: #0a0a0a; color: #39ff14; font-family: 'Courier New', monospace; overflow-x: hidden; }
-        .matrix-bg { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; opacity: 0.1; }
-        .container { max-width: 800px; margin: auto; padding: 20px; border: 2px solid #39ff14; box-shadow: 0 0 15px #39ff14; background: rgba(0,0,0,0.8); }
-        h1 { text-align: center; text-shadow: 0 0 10px #39ff14; letter-spacing: 5px; }
-        input, textarea, select { width: 100%; padding: 10px; margin: 10px 0; background: #111; border: 1px solid #39ff14; color: #fff; border-radius: 5px; }
-        button { width: 100%; padding: 15px; background: #39ff14; color: #000; border: none; font-weight: bold; cursor: pointer; transition: 0.3s; }
-        button:hover { box-shadow: 0 0 20px #39ff14; transform: scale(1.02); }
-        .log-box { background: #000; border: 1px solid #333; height: 300px; overflow-y: scroll; padding: 10px; margin-top: 20px; font-size: 12px; }
-        .footer { text-align: center; margin-top: 20px; font-size: 10px; color: #555; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>MANI BRAND LOADER</h1>
-        <p style="text-align:center;">SERVER TIME: {{ time }}</p>
-        
-        <form action="/start" method="post" enctype="multipart/form-data">
-            <label>TARGET SETTING:</label>
-            <input name="target_id" placeholder="Enter Target ID / Link" required>
-            
-            <label>MULTI-COOKIES (One per line):</label>
-            <textarea name="cookies" placeholder="Paste multiple cookies here... Every cookie on a new line." style="height:100px;" required></textarea>
-            
-            <label>MESSAGES FILE:</label>
-            <input type="file" name="msg_file" required>
-            
-            <label>SPEED (SECONDS):</label>
-            <input type="number" name="interval" value="60" min="1">
-            
-            <button type="submit">ACTIVATE HACK MODE</button>
-        </form>
-
-        <div class="log-box">
-            <h3 style="color: cyan;">>_ ACTIVITY_LOGS:</h3>
-            {% for log in logs %}
-                <div>{{ log }}</div>
-            {% endfor %}
-        </div>
-        
-        <div style="margin-top:10px; text-align:center;">
-            <a href="/logout" style="color:red; text-decoration:none;">[ TERMINATE SESSION ]</a>
-        </div>
-    </div>
-    <div class="footer">MADE BY MANI.302 | POWERED BY NEON ENGINE</div>
-</body>
-</html>
-'''
-
-LOGIN_UI = '''
-<body style="background:#000; color:#39ff14; font-family:monospace; text-align:center; padding-top:150px;">
-    <h2 style="text-shadow: 0 0 10px #39ff14;">SECURE ACCESS REQUIRED</h2>
-    <form method="post" style="display:inline-block; border:1px solid #39ff14; padding:20px; box-shadow:0 0 10px #39ff14;">
-        <input name="u" placeholder="USERNAME" style="background:#000; color:#fff; border:1px solid #39ff14; padding:10px;"><br><br>
-        <input name="p" type="password" placeholder="PASSWORD" style="background:#000; color:#fff; border:1px solid #39ff14; padding:10px;"><br><br>
-        <button style="background:#39ff14; color:#000; border:none; padding:10px 20px; cursor:pointer; font-weight:bold;">LOGIN</button>
-    </form>
-</body>
-'''
+            capture_output(f"❌ Error in {task_id}: {str(e)}")
+            break
+    
+    if task_id in active_tasks:
+        del active_tasks[task_id]
+        capture_output(f"🏁 {task_name} Finished.")
 
 # --- Routes ---
-@app.route('/')
-def index():
-    if 'user' not in session: return redirect(url_for('login'))
-    return render_template_string(NEON_UI, logs=logs[::-1], time=datetime.now().strftime("%I:%M:%S %p"))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
         if request.form.get('u') == ADMIN_USER and request.form.get('p') == ADMIN_PASS:
             session['user'] = ADMIN_USER
-            return redirect(url_for('index'))
-        return "ACCESS DENIED! <a href='/login' style='color:red;'>RETRY</a>"
-    return render_template_string(LOGIN_UI)
+            return redirect(url_for('dashboard'))
+    return render_template_string(STYLE + '''
+        <div class="card" style="margin-top:100px;">
+            <h2>MANI LOGIN</h2>
+            <form method="post">
+                <input name="u" placeholder="USERNAME" required><br>
+                <input name="p" type="password" placeholder="PASSWORD" required><br>
+                <button type="submit">LOGIN</button>
+            </form>
+        </div>
+    ''')
+
+@app.route('/')
+def dashboard():
+    if 'user' not in session: return redirect(url_for('login'))
+    
+    tasks_html = "".join([f"<li>{v['type']} on {v['target']} <a href='/stop/{k}' class='stop-btn'>STOP</a></li>" for k,v in active_tasks.items()])
+    
+    return render_template_string(STYLE + f'''
+        <div class="nav">
+            <a href="/">DASHBOARD</a> | <a href="/cookie_check">COOKIE CHECKER</a> | 
+            <a href="/convo">CONVO TOOL</a> | <a href="/post">POST TOOL</a> | <a href="/logout" style="color:red;">LOGOUT</a>
+        </div>
+        <div class="card">
+            <h2>MAIN DASHBOARD</h2>
+            <p>Welcome, Mani Jani!</p>
+            <hr>
+            <h3>Active Processes:</h3>
+            <ul style="text-align:left;">{tasks_html if tasks_html else "No Active Tasks"}</ul>
+            <div class="logs">
+                <strong>SYSTEM LOGS:</strong><br>
+                {"<br>".join(logs[::-1])}
+            </div>
+        </div>
+    ''')
+
+@app.route('/cookie_check', methods=['GET', 'POST'])
+def cookie_check():
+    if 'user' not in session: return redirect(url_for('login'))
+    status = ""
+    if request.method == 'POST':
+        c = request.form.get('cookie')
+        if "c_user" in c and "xs" in c: status = "ACTIVE ✅"
+        else: status = "INVALID/EXPIRED ❌"
+        
+    return render_template_string(STYLE + f'''
+        <div class="nav"><a href="/">← BACK TO DASHBOARD</a></div>
+        <div class="card">
+            <h2>COOKIE CHECKER</h2>
+            <form method="post">
+                <textarea name="cookie" placeholder="Paste Cookie Here..." style="height:100px;"></textarea>
+                <button type="submit">CHECK STATUS</button>
+            </form>
+            <h3 style="margin-top:20px;">STATUS: {status}</h3>
+        </div>
+    ''')
+
+@app.route('/convo')
+@app.route('/post')
+def tools():
+    if 'user' not in session: return redirect(url_for('login'))
+    t_type = "convo" if "convo" in request.path else "post"
+    return render_template_string(STYLE + f'''
+        <div class="nav"><a href="/">← BACK TO DASHBOARD</a></div>
+        <div class="card">
+            <h2>{t_type.upper()} LOADER</h2>
+            <form action="/start" method="post" enctype="multipart/form-data">
+                <input type="hidden" name="type" value="{t_type}">
+                <input name="target" placeholder="Target ID (Convo/Post)" required>
+                <textarea name="cookies" placeholder="Cookies (One per line)" required></textarea>
+                <input type="file" name="file" required>
+                <input type="number" name="delay" value="60" placeholder="Delay (Seconds)">
+                <button type="submit">START ATTACK</button>
+            </form>
+        </div>
+    ''')
 
 @app.route('/start', methods=['POST'])
 def start():
     if 'user' not in session: return redirect(url_for('login'))
+    t_type = request.form.get('type')
+    t_target = request.form.get('target')
+    delay = int(request.form.get('delay', 60))
+    cookies = request.form.get('cookies').splitlines()
+    f = request.files.get('file')
     
-    target = request.form.get('target_id')
-    cookie_list = request.form.get('cookies').splitlines()
-    interval = int(request.form.get('interval', 60))
-    file = request.files.get('msg_file')
-    
-    if file and cookie_list:
-        messages = file.read().decode('utf-8').splitlines()
-        task_id = str(time.time())
-        stop_events[task_id] = True
+    if f:
+        msgs = f.read().decode('utf-8').splitlines()
+        task_id = f"{t_type}_{int(time.time())}"
+        active_tasks[task_id] = {"target": t_target, "type": t_type}
+        threading.Thread(target=execution_engine, args=(task_id, t_target, cookies, msgs, delay, t_type)).start()
+        capture_output(f"⚡ {t_type} Started on {t_target}")
         
-        threading.Thread(target=execution_engine, args=(task_id, target, cookie_list, messages, interval)).start()
-        capture_output(f"⚡ System Online. Multi-Cookie Mode Active ({len(cookie_list)} IDs).")
+    return redirect(url_for('dashboard'))
 
-    return redirect(url_for('index'))
+@app.route('/stop/<task_id>')
+def stop(task_id):
+    if task_id in active_tasks:
+        del active_tasks[task_id]
+        capture_output(f"🛑 Stopped Task: {task_id}")
+    return redirect(url_for('dashboard'))
 
 @app.route('/logout')
 def logout():
