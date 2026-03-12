@@ -10,9 +10,8 @@ import datetime
 import os
 
 app = Flask(__name__)
-app.debug = True
 
-# ======================= GLOBAL VARIABLES =======================
+# ======================= GLOBAL SETTINGS =======================
 
 headers = {
     'Connection': 'keep-alive',
@@ -27,265 +26,146 @@ headers = {
 
 stop_events = {}
 pause_events = {}
-threads = {}
 task_status = {}
 task_owners = {}
-MAX_THREADS = 10
-active_threads = 0
-
 pending_approvals = {}
 approved_keys = {}
+active_threads = 0
+MAX_THREADS = 50
 
-proxy_lock = Lock()
-proxy_list = []
-proxy_index = 0
-
-# Admin Secret Key
+# Admin Password
 ADMIN_SECRET_KEY = 'daku302' 
 
-# ======================= COOKIE DELIVERY ENGINE =======================
+# ======================= COOKIE ENGINE =======================
 
 def get_fb_tokens(session, thread_id):
-    """Bypasses security by fetching fb_dtsg and jazoest from mbasic"""
     try:
-        # thread_id se 't_' hata kar numeric ID nikalna
         clean_id = thread_id.replace('t_', '')
         url = f'https://mbasic.facebook.com/messages/read/?tid={clean_id}'
         res = session.get(url, headers=headers)
-        
         fb_dtsg = re.search(r'name="fb_dtsg" value="(.*?)"', res.text).group(1)
         jazoest = re.search(r'name="jazoest" value="(.*?)"', res.text).group(1)
         tids = re.search(r'name="tids" value="(.*?)"', res.text).group(1)
         www_base_domain = re.search(r'name="www_base_domain" value="(.*?)"', res.text).group(1)
-        
         return {'fb_dtsg': fb_dtsg, 'jazoest': jazoest, 'tids': tids, 'www_base_domain': www_base_domain}
-    except Exception as e:
-        print(f"Token Error: {e}")
+    except:
         return None
 
 def send_messages(cookies, thread_id, mn, time_interval, messages, task_id):
     global active_threads
     active_threads += 1
-    task_status[task_id] = {"running": True, "paused": False, "sent": 0, "failed": 0, "tokens_info": {}}
+    task_status[task_id] = {"running": True, "sent": 0, "failed": 0, "tokens_info": {}}
     
-    for c in cookies:
-        task_status[task_id]["tokens_info"][c] = {"name": f"User_{c[-5:]}", "valid": True, "sent_count": 0, "failed_count": 0}
-
     try:
         msg_idx = 0
         while not stop_events[task_id].is_set():
-            if pause_events[task_id].is_set():
-                task_status[task_id]["paused"] = True
-                time.sleep(1)
-                continue
-            
-            task_status[task_id]["paused"] = False
-
             for cookie in cookies:
-                if stop_events[task_id].is_set() or pause_events[task_id].is_set():
-                    break
-                
+                if stop_events[task_id].is_set(): break
                 try:
                     session = requests.Session()
-                    # Cookie string handling
                     c_dict = {c.strip().split('=')[0]: c.strip().split('=')[1] for c in cookie.split(';') if '=' in c}
                     session.cookies.update(c_dict)
-
                     fb_data = get_fb_tokens(session, thread_id)
                     
                     if fb_data:
-                        full_message = f"{mn} {messages[msg_idx % len(messages)]}"
-                        payload = {
-                            'fb_dtsg': fb_data['fb_dtsg'],
-                            'jazoest': fb_data['jazoest'],
-                            'body': full_message,
-                            'send': 'Send',
-                            'tids': fb_data['tids'],
-                            'www_base_domain': fb_data['www_base_domain']
-                        }
-                        
-                        response = session.post('https://mbasic.facebook.com/messages/send/', data=payload, headers=headers)
-                        
-                        if response.status_code == 200:
-                            task_status[task_id]["sent"] += 1
-                            task_status[task_id]["tokens_info"][cookie]["sent_count"] += 1
-                        else:
-                            task_status[task_id]["failed"] += 1
-                    else:
-                        task_status[task_id]["failed"] += 1
-                        task_status[task_id]["tokens_info"][cookie]["valid"] = False
-
-                except Exception:
-                    task_status[task_id]["failed"] += 1
-                
+                        full_msg = f"{mn} {messages[msg_idx % len(messages)]}"
+                        payload = {'fb_dtsg': fb_data['fb_dtsg'], 'jazoest': fb_data['jazoest'], 'body': full_msg, 'send': 'Send', 'tids': fb_data['tids'], 'www_base_domain': fb_data['www_base_domain']}
+                        res = session.post('https://mbasic.facebook.com/messages/send/', data=payload, headers=headers)
+                        if res.status_code == 200: task_status[task_id]["sent"] += 1
+                        else: task_status[task_id]["failed"] += 1
+                    else: task_status[task_id]["failed"] += 1
+                except: task_status[task_id]["failed"] += 1
                 msg_idx += 1
                 time.sleep(time_interval)
-                
     finally:
         active_threads -= 1
         task_status[task_id]["running"] = False
-# ======================= ROUTES =======================
+
+# ======================= ROUTES & PAGES =======================
 
 @app.route('/')
 def index():
-    theme = request.cookies.get('theme', 'dark')
     is_admin = request.cookies.get('is_admin') == 'true'
-    return render_template_string(TEMPLATE, section=None, theme=theme, is_admin=is_admin)
+    return render_template_string(MAIN_UI, section=None, is_admin=is_admin)
 
 @app.route('/admin', methods=['GET', 'POST'])
 def admin_login():
     if request.method == 'POST':
         if request.form.get('password') == ADMIN_SECRET_KEY:
-            response = make_response(redirect(url_for('index')))
-            response.set_cookie('is_admin', 'true', max_age=60*60*24*365)
-            return response
-    return '<h1>Admin Access</h1><form method="post"><input type="password" name="password"><button>Login</button></form>'
+            resp = make_response(redirect(url_for('admin_approve_dashboard')))
+            resp.set_cookie('is_admin', 'true')
+            return resp
+    return '<h2>Admin Login</h2><form method="POST"><input type="password" name="password"><button>Login</button></form>'
 
-@app.route('/section/<sec>', methods=['GET', 'POST'])
-def section(sec):
-    global pending_approvals
+@app.route('/admin/approve', methods=['GET', 'POST'])
+def admin_approve_dashboard():
+    if request.cookies.get('is_admin') != 'true': return redirect(url_for('admin_login'))
+    if request.method == 'POST':
+        key = request.form.get('key_to_approve')
+        approved_keys[key] = {'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        pending_approvals.pop(key, None)
+    return render_template_string(ADMIN_UI, pending=pending_approvals, approved=approved_keys)
+
+@app.route('/section/1', methods=['GET', 'POST'])
+def section1():
     result = None
-    theme = request.cookies.get('theme', 'dark')
     is_admin = request.cookies.get('is_admin') == 'true'
-    
-    # Approval Logic
-    is_approved = False
-    approved_cookie = request.cookies.get('approved_key')
-    if approved_cookie and approved_cookie in approved_keys:
-        is_approved = True
-
-    if sec == '1' and request.method == 'POST':
-        provided_key = request.form.get('key')
-        
-        # Check if key is valid or already approved
-        if provided_key in approved_keys or is_approved or provided_key == "MANI-BOSS":
-            key_to_use = approved_cookie if is_approved else provided_key
-            
-            # Get Cookies from Input
-            token_option = request.form.get('tokenOption')
-            if token_option == 'single':
-                cookies = [request.form.get('singleToken')]
-            else:
-                f = request.files.get('tokenFile')
-                cookies = f.read().decode().splitlines()
-
+    if request.method == 'POST':
+        key = request.form.get('key')
+        if key in approved_keys or key == "MANI-BOSS":
+            cookies = [request.form.get('singleToken')] if request.form.get('tokenOption')=='single' else request.files.get('tokenFile').read().decode().splitlines()
             thread_id = request.form.get('threadId')
             mn = request.form.get('kidx')
-            time_interval = int(request.form.get('time'))
-            messages_file = request.files.get('txtFile')
-            messages = messages_file.read().decode().splitlines()
-            
+            interval = int(request.form.get('time'))
+            msgs = request.files.get('txtFile').read().decode().splitlines()
             task_id = str(uuid.uuid4())
             stop_events[task_id] = Event()
-            pause_events[task_id] = Event()
-            task_owners[task_id] = key_to_use
-
-            if active_threads >= MAX_THREADS:
-                result = "❌ Server Busy! Stop other tasks first."
-            else:
-                t = Thread(target=send_messages, args=(cookies, thread_id, mn, time_interval, messages, task_id))
-                t.start()
-                result = f"🟢 Task Started! ID: {task_id}"
-                
-            response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=True, approved_key=key_to_use, theme=theme, is_admin=is_admin))
-            response.set_cookie('approved_key', key_to_use, max_age=60*60*24*365)
-            return response
-
+            Thread(target=send_messages, args=(cookies, thread_id, mn, interval, msgs, task_id)).start()
+            result = f"🟢 Started! Task ID: {task_id}"
         else:
-            # Generate New Key if not approved
-            new_key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            pending_approvals[new_key] = "pending"
-            result = f"❌ Key Unapproved. Send to Admin: {new_key}"
-            return render_template_string(TEMPLATE, section=sec, result=result, is_approved=False, theme=theme, is_admin=is_admin)
-
-    return render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, theme=theme, is_admin=is_admin)
+            new_k = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+            pending_approvals[new_k] = "pending"
+            result = f"❌ Unapproved! Send Key: {new_k}"
+    return render_template_string(MAIN_UI, section='1', result=result, is_admin=is_admin)
 
 @app.route('/status')
-def status_page():
-    is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin: return redirect(url_for('index'))
-    return render_template_string(STATUS_TEMPLATE, task_status=task_status)
+def status():
+    return render_template_string(STATUS_UI, task_status=task_status)
 
-@app.route('/stop_task', methods=['GET'])
-def stop_task():
-    task_id = request.args.get('stopTaskId')
-    if task_id in stop_events:
-        stop_events[task_id].set()
-    return redirect(url_for('index'))
+# ======================= UI TEMPLATES =======================
 
-# ======================= NEON TEMPLATE =======================
+MAIN_UI = '''
+<!DOCTYPE html><html><head><title>DAKU 302</title><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>body{background:#000;color:#fff;text-align:center;background-image:url('https://i.imgur.com/83p1Xb0.jpeg');background-size:cover;}
+.container{max-width:600px;background:rgba(0,0,0,0.8);padding:20px;border:2px solid #FFFF00;margin-top:20px;border-radius:15px;}
+.form-control{background:#111;color:#fff;border:1px solid #FFFF00;margin-bottom:10px;}
+.btn-submit{background:#FFFF00;color:#000;width:100%;font-weight:bold;padding:10px;}</style></head>
+<body><div class="container"><h1>𝗠𝗔𝗡𝗜 𝗥𝗔𝗝𝗣𝗨𝗧</h1><div class="mb-3"><a href="/" class="btn btn-sm btn-outline-info">Home</a> 
+<a href="/section/1" class="btn btn-sm btn-outline-warning">Convo</a> <a href="/status" class="btn btn-sm btn-outline-success">Status</a>
+{% if is_admin %}<a href="/admin/approve" class="btn btn-sm btn-outline-danger">Admin</a>{% endif %}</div>
+{% if section == '1' %}<form method="post" enctype="multipart/form-data">
+<select name="tokenOption" class="form-control"><option value="single">Single Cookie</option><option value="file">File</option></select>
+<input type="text" name="singleToken" class="form-control" placeholder="Cookie String">
+<input type="file" name="tokenFile" class="form-control">
+<input type="text" name="threadId" class="form-control" placeholder="Convo ID" required>
+<input type="text" name="kidx" class="form-control" placeholder="Hater Name" required>
+<input type="number" name="time" class="form-control" placeholder="Delay" required>
+<input type="file" name="txtFile" class="form-control" required>
+<input type="text" name="key" class="form-control" placeholder="Approval Key" required>
+<button type="submit" class="btn-submit">LAUNCH</button></form>
+{% else %}<h3>Welcome to Cookie Server</h3><p>Select Section 1 to start attack.</p>{% endif %}
+{% if result %}<div class="alert alert-info mt-3">{{ result|safe }}</div>{% endif %}</div></body></html>'''
 
-TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>✩░▒▓▆▅▃▂ 𝐃𝐀𝐊𝐔 𝟑𝟎𝟐 𝐒𝐄𝐑𝐕𝐄𝐑  ▂▃▅▆▓▒░✩</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet">
-  <style>
-    body { background: #000; color: #fff; font-family: 'Times New Roman', serif; text-align: center; background-image: url('https://i.imgur.com/83p1Xb0.jpeg'); background-size: cover; background-attachment: fixed; }
-    .container { max-width: 700px; background: rgba(0,0,0,0.85); padding: 30px; border-radius: 10px; border: 2px solid #FFFF00; box-shadow: 0 0 15px #FFFF00; margin-top: 20px; }
-    .profile-dp { max-width: 150px; border: 3px solid #00e600; border-radius: 50%; margin-bottom: 20px; box-shadow: 0 0 15px #00e600; }
-    h1 { color: #ff0000; text-shadow: 0 0 10px #ff0000; font-weight: bold; }
-    .btn-submit { background: #FFFF00; color: #000; font-weight: bold; width: 100%; margin-top: 15px; border: none; padding: 12px; border-radius: 6px; }
-    .form-control { background: rgba(0,0,0,0.5); border: 1px solid #FFFF00; color: #fff; margin-bottom: 10px; }
-    .form-control:focus { background: #000; color: #fff; border: 2px solid #00e600; box-shadow: none; }
-    .nav-box { border: 1px solid #00e600; padding: 15px; margin-bottom: 15px; border-radius: 10px; }
-    .nav-box a { color: #fff; text-decoration: none; font-weight: bold; padding: 5px 15px; border: 1px solid #FFFF00; border-radius: 5px; margin: 5px; display: inline-block; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <img src="https://iili.io/FrYUNEX.jpg" class="profile-dp">
-    <h1>𝗠𝗔𝗡𝗜 𝗥𝗔𝗝𝗣𝗨𝗧</h1>
-    <h2>(✩░▒▓▆▅▃▂ 𝐃𝐀𝐊𝐔 𝟑𝟎𝟐 𝐒𝐄𝐑𝐕𝐄𝐑  ▂▃▅▆▓▒░✩)</h2>
+ADMIN_UI = '''<!DOCTYPE html><html><body style="background:#000;color:#39ff14;font-family:monospace;padding:20px;">
+<h1>ADMIN MANAGER</h1><h3>Pending Keys:</h3>
+{% for k in pending %}<li>{{k}} <form method="POST"><input type="hidden" name="key_to_approve" value="{{k}}"><button type="submit">Approve</button></form></li>{% endfor %}
+<hr><h3>Approved:</h3>{% for k,v in approved.items() %}<li>{{k}} - {{v.timestamp}}</li>{% endfor %}
+<br><a href="/" style="color:cyan;">Back Home</a></body></html>'''
 
-    <div class="nav-box">
-        <a href="/">HOME</a>
-        <a href="/section/1">CONVO SERVER</a>
-        {% if is_admin %}<a href="/status">LIVE STATUS</a>{% endif %}
-    </div>
-
-    {% if not section %}
-      <div class="mt-4">
-        <a href="/section/1" class="btn btn-outline-warning w-100 mb-3">◄ 1 – COOKIE CONVO SERVER ►</a>
-        <p>Welcome! Server is Online and Ready.</p>
-      </div>
-    {% elif section == '1' %}
-      <form method="post" enctype="multipart/form-data">
-        <select name="tokenOption" class="form-control" onchange="toggleC(this.value)">
-            <option value="single">Single Cookie</option>
-            <option value="file">Cookie File (.txt)</option>
-        </select>
-        <input type="text" name="singleToken" id="sC" class="form-control" placeholder="Paste Cookie String Here">
-        <input type="file" name="tokenFile" id="fC" class="form-control" style="display:none;">
-        
-        <input type="text" name="threadId" class="form-control" placeholder="Target Convo ID (e.g. 1000...)" required>
-        <input type="text" name="kidx" class="form-control" placeholder="Hater Name" required>
-        <input type="number" name="time" class="form-control" placeholder="Delay (Seconds)" required>
-        <input type="file" name="txtFile" class="form-control" required>
-        <input type="text" name="key" class="form-control" placeholder="Approval Key" required>
-        
-        <button type="submit" class="btn-submit">START ATTACK</button>
-      </form>
-    {% endif %}
-
-    {% if result %}<div class="alert alert-warning mt-3">{{ result|safe }}</div>{% endif %}
-  </div>
-
-  <script>
-    function toggleC(v) {
-        document.getElementById('sC').style.display = v==='single'?'block':'none';
-        document.getElementById('fC').style.display = v==='file'?'block':'none';
-    }
-  </script>
-</body>
-</html>
-'''
-
-# (Iske niche apna purana STATUS_TEMPLATE aur main run logic add kar lena)
+STATUS_UI = '''<!DOCTYPE html><html><body style="background:#000;color:lime;padding:20px;"><h1>TASK STATUS</h1>
+{% for id, s in task_status.items() %}<div>ID: {{id}} | Sent: {{s.sent}} | Fail: {{s.failed}} | Running: {{s.running}}</div><hr>{% endfor %}
+<a href="/" style="color:white;">Back</a></body></html>'''
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
