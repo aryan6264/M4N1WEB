@@ -3,113 +3,142 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import os
-import json
 import threading
+from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = "supersecretkey"
+app.secret_key = "mani_power_key"
 
-# Admin aur User data
-USERS_FILE = 'users.json'
-ADMIN_USERNAME = "MANI.302"
+# --- Credentials ---
+ADMIN_USER = "mani302"
+ADMIN_PASS = "786786"
 
-# Global logs storage
+# Global storage for logs and active tasks
 logs = []
 
-def load_users():
-    if not os.path.exists(USERS_FILE):
-        with open(USERS_FILE, 'w') as f:
-            json.dump({ADMIN_USERNAME: {"password": "123", "is_approved": True}}, f)
-
-def get_users():
-    with open(USERS_FILE, 'r') as f:
-        return json.load(f)
-
-def save_users(users):
-    with open(USERS_FILE, 'w') as f:
-        json.dump(users, f, indent=4)
-
 def capture_output(message):
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%H:%M:%S")
     logs.append(f"[{timestamp}] {message}")
-    if len(logs) > 100:
-        logs.pop(0)
+    if len(logs) > 100: logs.pop(0)
 
-# --- Messenger Logic ---
-def send_messages(thread_id, cookies_str, messages, interval):
+# --- Helper: Cookie Checker ---
+def check_cookies(cookie_str):
     try:
-        # Cookies string ko dictionary mein convert karna
-        cookie_dict = {c.split('=')[0]: c.split('=')[1] for c in cookies_str.split('; ') if '=' in c}
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Referer': 'https://www.facebook.com/'
-        }
+        cookie_dict = {c.split('=')[0]: c.split('=')[1] for c in cookie_str.split('; ') if '=' in c}
+        res = requests.get("https://mbasic.facebook.com/profile.php", cookies=cookie_dict)
+        if "logout" in res.text.lower() or "mbasic_logout_button" in res.text:
+            return True, "Cookie Active ✅"
+        return False, "Cookie Expired ❌"
+    except:
+        return False, "Invalid Format ⚠️"
 
-        session_req = requests.Session()
-        for msg in messages:
-            msg = msg.strip()
-            if not msg: continue
+# --- Multi-Function Engine ---
+def execution_engine(task_type, target_id, cookies_str, messages, interval):
+    cookie_dict = {c.split('=')[0]: c.split('=')[1] for c in cookies_str.split('; ') if '=' in c}
+    
+    for msg in messages:
+        if not msg.strip(): continue
+        try:
+            current_time = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
             
-            # FB message bhejne ka basic logic (Simulation)
-            # Note: Reality mein FB complex tokens mangta hai, ye basic test hai
-            capture_output(f"Sending: {msg} to {thread_id}")
+            if task_type == "comment":
+                # Logic for Post Comment
+                url = f"https://mbasic.facebook.com/{target_id}"
+                capture_output(f"Commenting on Post: {target_id}")
+            elif task_type == "convo":
+                # Logic for Group/Convo
+                capture_output(f"Sending to Convo: {target_id}")
+            else:
+                # Logic for Personal IB
+                capture_output(f"Sending to Personal IB: {target_id}")
+
+            # Simulation of sending
+            time.sleep(1) 
+            capture_output(f"Success | Time: {current_time} | Msg: {msg}")
             
-            # Fake delay for simulation
+            # Show Cookie status during work
+            is_ok, _ = check_cookies(cookies_str)
+            if not is_ok:
+                capture_output("STOPPED: Cookie expired during task!")
+                break
+
             time.sleep(interval)
-            capture_output(f"Successfully Sent: {msg}")
+        except Exception as e:
+            capture_output(f"Error: {str(e)}")
 
-    except Exception as e:
-        capture_output(f"Error in sending: {str(e)}")
+# --- UI (HTML) ---
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MANI MULTI-LOADER</title>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
+        input, textarea, select { background: #111; color: #0f0; border: 1px solid #0f0; width: 100%; margin-bottom: 10px; padding: 10px; }
+        button { background: #0f0; color: #000; padding: 10px 20px; cursor: pointer; border: none; font-weight: bold; }
+        .log-box { background: #111; padding: 10px; border: 1px solid #333; height: 300px; overflow-y: scroll; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Mani Multi-Loader v2.0</h1>
+    <p>Current Time: {{ time }}</p>
 
-# --- Routes ---
-@app.route('/')
-def index():
-    if 'user' not in session:
-        return redirect(url_for('login'))
-    return """
-    <h1>Messenger Multi-Loader</h1>
-    <p>Welcome, """ + session['user'] + """</p>
     <form action="/start" method="post" enctype="multipart/form-data">
-        <input type="text" name="thread_id" placeholder="Thread ID" required><br><br>
-        <textarea name="cookies" placeholder="Paste Cookies Here..." required></textarea><br><br>
-        <input type="file" name="msg_file" required><br><br>
-        <input type="number" name="interval" placeholder="Interval (seconds)" value="60"><br><br>
+        <select name="task_type">
+            <option value="convo">FB Convo Message</option>
+            <option value="inbox">Personal IB Message</option>
+            <option value="comment">Post Comment</option>
+        </select>
+        <input type="text" name="target_id" placeholder="Target ID (Post/Convo/User ID)" required>
+        <textarea name="cookies" placeholder="Paste Cookies here..." required></textarea>
+        <input type="file" name="msg_file" required>
+        <input type="number" name="interval" placeholder="Time Interval (Seconds)" value="60">
         <button type="submit">Start Loading</button>
     </form>
-    <br><a href="/status">Check Status</a> | <a href="/logout">Logout</a>
-    """
+
+    <div class="log-box">
+        <h3>System Logs (Activity)</h3>
+        {% for log in logs %}
+            <div>{{ log }}</div>
+        {% endfor %}
+    </div>
+    <br><a href="/logout" style="color: red;">Logout</a>
+</body>
+</html>
+"""
+
+@app.route('/')
+def index():
+    if 'user' not in session: return redirect(url_for('login'))
+    return render_template_string(HTML_TEMPLATE, logs=logs[::-1], time=datetime.now().strftime("%I:%M:%S %p"))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        users = get_users()
-        if username in users and users[username]['password'] == password:
-            if users[username]['is_approved']:
-                session['user'] = username
-                return redirect(url_for('index'))
-            return "Wait for Admin Approval!"
-        return "Invalid Credentials!"
-    return '<form method="post">User: <input name="username"><br>Pass: <input type="password" name="password"><br><button>Login</button></form>'
+        if request.form['u'] == ADMIN_USER and request.form['p'] == ADMIN_PASS:
+            session['user'] = ADMIN_USER
+            return redirect(url_for('index'))
+        return "Wrong ID/Pass Jani!"
+    return '<h1>Mani Login</h1><form method="post">User: <input name="u"><br>Pass: <input name="p" type="password"><br><button>Enter</button></form>'
 
 @app.route('/start', methods=['POST'])
-def start_task():
-    thread_id = request.form['thread_id']
+def start():
+    task_type = request.form['task_type']
+    target_id = request.form['target_id']
     cookies = request.form['cookies']
     interval = int(request.form['interval'])
     file = request.files['msg_file']
     
-    messages = file.read().decode('utf-8').splitlines()
+    # Cookie Check
+    active, msg = check_cookies(cookies)
+    capture_output(f"Status: {msg}")
     
-    # Background thread mein chalana
-    threading.Thread(target=send_messages, args=(thread_id, cookies, messages, interval)).start()
-    return redirect(url_for('status'))
-
-@app.route('/status')
-def status():
-    return "<h2>System Logs</h2><pre>" + "\n".join(logs[::-1]) + "</pre><br><a href='/'>Back</a>"
+    if active:
+        messages = file.read().decode('utf-8').splitlines()
+        threading.Thread(target=execution_engine, args=(task_type, target_id, cookies, messages, interval)).start()
+        capture_output("Engine Started Successfully!")
+    
+    return redirect(url_for('index'))
 
 @app.route('/logout')
 def logout():
@@ -117,8 +146,5 @@ def logout():
     return redirect(url_for('login'))
 
 if __name__ == '__main__':
-    load_users()
-    import os
-    # Render dynamic port setting
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
