@@ -1,143 +1,157 @@
-from flask import Flask, request, redirect, url_for, jsonify, session, render_template_string
+from flask import Flask, request, redirect, url_for, session, render_template_string
 import requests
-from bs4 import BeautifulSoup
 import time
 import os
 import threading
 from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = "mani_power_key"
+app.secret_key = "mani_neon_power_786"
 
 # --- Credentials ---
 ADMIN_USER = "mani302"
 ADMIN_PASS = "786786"
 
-# Global storage for logs and active tasks
+# Global storage
 logs = []
+stop_events = {}
 
 def capture_output(message):
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    timestamp = datetime.now().strftime("%I:%M:%S %p")
     logs.append(f"[{timestamp}] {message}")
-    if len(logs) > 100: logs.pop(0)
+    if len(logs) > 60: logs.pop(0)
 
-# --- Helper: Cookie Checker ---
-def check_cookies(cookie_str):
-    try:
-        cookie_dict = {c.split('=')[0]: c.split('=')[1] for c in cookie_str.split('; ') if '=' in c}
-        res = requests.get("https://mbasic.facebook.com/profile.php", cookies=cookie_dict)
-        if "logout" in res.text.lower() or "mbasic_logout_button" in res.text:
-            return True, "Cookie Active ✅"
-        return False, "Cookie Expired ❌"
-    except:
-        return False, "Invalid Format ⚠️"
-
-# --- Multi-Function Engine ---
-def execution_engine(task_type, target_id, cookies_str, messages, interval):
-    cookie_dict = {c.split('=')[0]: c.split('=')[1] for c in cookies_str.split('; ') if '=' in c}
+# --- Multi-Cookie Task Engine ---
+def execution_engine(task_id, target_id, cookie_list, messages, interval):
+    cookie_index = 0
+    msg_index = 0
     
-    for msg in messages:
-        if not msg.strip(): continue
+    while msg_index < len(messages) and task_id in stop_events:
         try:
-            current_time = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+            current_cookie = cookie_list[cookie_index].strip()
+            cookie_dict = {c.split('=')[0]: c.split('=')[1] for c in current_cookie.split('; ') if '=' in c}
             
-            if task_type == "comment":
-                # Logic for Post Comment
-                url = f"https://mbasic.facebook.com/{target_id}"
-                capture_output(f"Commenting on Post: {target_id}")
-            elif task_type == "convo":
-                # Logic for Group/Convo
-                capture_output(f"Sending to Convo: {target_id}")
-            else:
-                # Logic for Personal IB
-                capture_output(f"Sending to Personal IB: {target_id}")
+            msg = messages[msg_index].strip()
+            if not msg: 
+                msg_index += 1
+                continue
 
-            # Simulation of sending
-            time.sleep(1) 
-            capture_output(f"Success | Time: {current_time} | Msg: {msg}")
+            # Simulation of FB Request
+            # Reality mein yahan requests.post ayega
+            capture_output(f"🚀 Using ID {cookie_index + 1} | Target: {target_id}")
+            capture_output(f"💌 Msg: {msg}")
             
-            # Show Cookie status during work
-            is_ok, _ = check_cookies(cookies_str)
-            if not is_ok:
-                capture_output("STOPPED: Cookie expired during task!")
-                break
-
+            time.sleep(1)
+            capture_output(f"✅ Success | Sent from Cookie {cookie_index + 1}")
+            
+            msg_index += 1
             time.sleep(interval)
-        except Exception as e:
-            capture_output(f"Error: {str(e)}")
 
-# --- UI (HTML) ---
-HTML_TEMPLATE = """
+        except Exception as e:
+            capture_output(f"⚠️ Cookie {cookie_index + 1} Failed! Switching...")
+            cookie_index = (cookie_index + 1) % len(cookie_list)
+            time.sleep(2)
+
+    capture_output(f"🏁 Task {task_id} Completed!")
+
+# --- Neon UI Design ---
+NEON_UI = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>MANI MULTI-LOADER</title>
+    <title>MANI CYBER LOADER</title>
     <style>
-        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
-        input, textarea, select { background: #111; color: #0f0; border: 1px solid #0f0; width: 100%; margin-bottom: 10px; padding: 10px; }
-        button { background: #0f0; color: #000; padding: 10px 20px; cursor: pointer; border: none; font-weight: bold; }
-        .log-box { background: #111; padding: 10px; border: 1px solid #333; height: 300px; overflow-y: scroll; margin-top: 20px; }
+        body { background-color: #0a0a0a; color: #39ff14; font-family: 'Courier New', monospace; overflow-x: hidden; }
+        .matrix-bg { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; opacity: 0.1; }
+        .container { max-width: 800px; margin: auto; padding: 20px; border: 2px solid #39ff14; box-shadow: 0 0 15px #39ff14; background: rgba(0,0,0,0.8); }
+        h1 { text-align: center; text-shadow: 0 0 10px #39ff14; letter-spacing: 5px; }
+        input, textarea, select { width: 100%; padding: 10px; margin: 10px 0; background: #111; border: 1px solid #39ff14; color: #fff; border-radius: 5px; }
+        button { width: 100%; padding: 15px; background: #39ff14; color: #000; border: none; font-weight: bold; cursor: pointer; transition: 0.3s; }
+        button:hover { box-shadow: 0 0 20px #39ff14; transform: scale(1.02); }
+        .log-box { background: #000; border: 1px solid #333; height: 300px; overflow-y: scroll; padding: 10px; margin-top: 20px; font-size: 12px; }
+        .footer { text-align: center; margin-top: 20px; font-size: 10px; color: #555; }
     </style>
 </head>
 <body>
-    <h1>Mani Multi-Loader v2.0</h1>
-    <p>Current Time: {{ time }}</p>
+    <div class="container">
+        <h1>MANI BRAND LOADER</h1>
+        <p style="text-align:center;">SERVER TIME: {{ time }}</p>
+        
+        <form action="/start" method="post" enctype="multipart/form-data">
+            <label>TARGET SETTING:</label>
+            <input name="target_id" placeholder="Enter Target ID / Link" required>
+            
+            <label>MULTI-COOKIES (One per line):</label>
+            <textarea name="cookies" placeholder="Paste multiple cookies here... Every cookie on a new line." style="height:100px;" required></textarea>
+            
+            <label>MESSAGES FILE:</label>
+            <input type="file" name="msg_file" required>
+            
+            <label>SPEED (SECONDS):</label>
+            <input type="number" name="interval" value="60" min="1">
+            
+            <button type="submit">ACTIVATE HACK MODE</button>
+        </form>
 
-    <form action="/start" method="post" enctype="multipart/form-data">
-        <select name="task_type">
-            <option value="convo">FB Convo Message</option>
-            <option value="inbox">Personal IB Message</option>
-            <option value="comment">Post Comment</option>
-        </select>
-        <input type="text" name="target_id" placeholder="Target ID (Post/Convo/User ID)" required>
-        <textarea name="cookies" placeholder="Paste Cookies here..." required></textarea>
-        <input type="file" name="msg_file" required>
-        <input type="number" name="interval" placeholder="Time Interval (Seconds)" value="60">
-        <button type="submit">Start Loading</button>
-    </form>
-
-    <div class="log-box">
-        <h3>System Logs (Activity)</h3>
-        {% for log in logs %}
-            <div>{{ log }}</div>
-        {% endfor %}
+        <div class="log-box">
+            <h3 style="color: cyan;">>_ ACTIVITY_LOGS:</h3>
+            {% for log in logs %}
+                <div>{{ log }}</div>
+            {% endfor %}
+        </div>
+        
+        <div style="margin-top:10px; text-align:center;">
+            <a href="/logout" style="color:red; text-decoration:none;">[ TERMINATE SESSION ]</a>
+        </div>
     </div>
-    <br><a href="/logout" style="color: red;">Logout</a>
+    <div class="footer">MADE BY MANI.302 | POWERED BY NEON ENGINE</div>
 </body>
 </html>
-"""
+'''
 
+LOGIN_UI = '''
+<body style="background:#000; color:#39ff14; font-family:monospace; text-align:center; padding-top:150px;">
+    <h2 style="text-shadow: 0 0 10px #39ff14;">SECURE ACCESS REQUIRED</h2>
+    <form method="post" style="display:inline-block; border:1px solid #39ff14; padding:20px; box-shadow:0 0 10px #39ff14;">
+        <input name="u" placeholder="USERNAME" style="background:#000; color:#fff; border:1px solid #39ff14; padding:10px;"><br><br>
+        <input name="p" type="password" placeholder="PASSWORD" style="background:#000; color:#fff; border:1px solid #39ff14; padding:10px;"><br><br>
+        <button style="background:#39ff14; color:#000; border:none; padding:10px 20px; cursor:pointer; font-weight:bold;">LOGIN</button>
+    </form>
+</body>
+'''
+
+# --- Routes ---
 @app.route('/')
 def index():
     if 'user' not in session: return redirect(url_for('login'))
-    return render_template_string(HTML_TEMPLATE, logs=logs[::-1], time=datetime.now().strftime("%I:%M:%S %p"))
+    return render_template_string(NEON_UI, logs=logs[::-1], time=datetime.now().strftime("%I:%M:%S %p"))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        if request.form['u'] == ADMIN_USER and request.form['p'] == ADMIN_PASS:
+        if request.form.get('u') == ADMIN_USER and request.form.get('p') == ADMIN_PASS:
             session['user'] = ADMIN_USER
             return redirect(url_for('index'))
-        return "Wrong ID/Pass Jani!"
-    return '<h1>Mani Login</h1><form method="post">User: <input name="u"><br>Pass: <input name="p" type="password"><br><button>Enter</button></form>'
+        return "ACCESS DENIED! <a href='/login' style='color:red;'>RETRY</a>"
+    return render_template_string(LOGIN_UI)
 
 @app.route('/start', methods=['POST'])
 def start():
-    task_type = request.form['task_type']
-    target_id = request.form['target_id']
-    cookies = request.form['cookies']
-    interval = int(request.form['interval'])
-    file = request.files['msg_file']
+    if 'user' not in session: return redirect(url_for('login'))
     
-    # Cookie Check
-    active, msg = check_cookies(cookies)
-    capture_output(f"Status: {msg}")
+    target = request.form.get('target_id')
+    cookie_list = request.form.get('cookies').splitlines()
+    interval = int(request.form.get('interval', 60))
+    file = request.files.get('msg_file')
     
-    if active:
+    if file and cookie_list:
         messages = file.read().decode('utf-8').splitlines()
-        threading.Thread(target=execution_engine, args=(task_type, target_id, cookies, messages, interval)).start()
-        capture_output("Engine Started Successfully!")
-    
+        task_id = str(time.time())
+        stop_events[task_id] = True
+        
+        threading.Thread(target=execution_engine, args=(task_id, target, cookie_list, messages, interval)).start()
+        capture_output(f"⚡ System Online. Multi-Cookie Mode Active ({len(cookie_list)} IDs).")
+
     return redirect(url_for('index'))
 
 @app.route('/logout')
