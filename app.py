@@ -1,1081 +1,255 @@
-from flask import Flask, request, render_template_string, redirect, url_for, make_response, jsonify
+from flask import Flask, request, redirect, url_for, jsonify, session, g
 import requests
-from threading import Thread, Event, Lock
 import time
-import random
-import string
+import threading
 import uuid
-import datetime
-import os
+import json 
+import functools 
+import re 
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
-app.debug = True
 
-# ======================= GLOBAL VARIABLES =======================
+# ==========================================================
+# CONFIG & DATA PATHS
+# ==========================================================
+app.secret_key = 'your_super_secret_key_change_this' 
+ADMIN_USERNAME = 'MANI.302' 
+ADMIN_PASSWORD = 'M4N1X2662' 
+USERS_FILE = 'users.json' 
 
-headers = {
-    'Connection': 'keep-alive',
-    'Cache-Control': 'max-age=0',
-    'Upgrade-Insecure-Requests': '1',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.76 Safari/537.36',
-    'user-agent': 'Mozilla/5.0 (Linux; Android 11; TECNO CE7j) AppleWebKit/537.36 (KHTML; Gecko) Chrome/101.0.4951.40 Mobile Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.0,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Encoding': 'gzip, deflate',
-    'Accept-Language': 'en-US,en;q=0.9,fr;q=0.8',
-    'referer': 'www.google.com'
-}
+TASK_MANAGER = {} 
+LOG_CAPTURE = []
 
-stop_events = {}
-pause_events = {}
-threads = {}
-task_status = {}
-task_owners = {} # New dictionary to track which key owns which task
-MAX_THREADS = 5
-active_threads = 0
+# ==========================================================
+# UTILITIES & SCRAPING LOGIC
+# ==========================================================
 
-pending_approvals = {}
-approved_keys = {}
-
-proxy_lock = Lock()
-proxy_list = []
-proxy_index = 0
-
-# Admin Secret Key for the Admin Panel
-ADMIN_SECRET_KEY = 'daku302' 
-
-# ======================= UTILITY FUNCTIONS =======================
-
-def get_proxy():
-    with proxy_lock:
-        if not proxy_list:
-            return None
-        global proxy_index
-        proxy = proxy_list[proxy_index]
-        proxy_index = (proxy_index + 1) % len(proxy_list)
-        return {'http': f'http://{proxy}', 'https': f'https://{proxy}'}
-
-def get_user_name(token, proxies=None):
+def get_fb_tokens(session, url):
+    """Page se fb_dtsg aur jazoest nikalne ke liye logic"""
     try:
-        response = requests.get(f"https://graph.facebook.com/me?fields=name&access_token={token}", proxies=proxies)
-        data = response.json()
-        return data.get("name", "Unknown")
-    except Exception as e:
-        return "Unknown"
-
-def get_token_info(token, proxies=None):
-    try:
-        r = requests.get(f'https://graph.facebook.com/me?fields=id,name,email&access_token={token}', proxies=proxies)
-        if r.status_code == 200:
-            data = r.json()
-            return {
-                "id": data.get("id", "N/A"),
-                "name": data.get("name", "N/A"),
-                "email": data.get("email", "Not available"),
-                "valid": True
-            }
+        response = session.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        fb_dtsg = soup.find('input', {'name': 'fb_dtsg'})['value']
+        jazoest = soup.find('input', {'name': 'jazoest'})['value']
+        return fb_dtsg, jazoest
     except:
-        pass
-    return {
-        "id": "",
-        "name": "",
-        "email": "",
-        "valid": False
-    }
+        return None, None
 
-def fetch_uids(token, proxies=None):
-    formatted = ['<span style="color:#FFFF00; font-weight:bold;">=== FETCHED CONVERSATIONS ===</span><br><br>']
-    count = 1
-    url = f'https://graph.facebook.com/me/conversations?access_token={token}&fields=name,updated_time'
-    while url:
-        r = requests.get(url, proxies=proxies)
-        if r.status_code != 200:
-            break
-        data = r.json()
-        for convo in data.get('data', []):
-            convo_id = convo.get('id', 'Unknown')
-            name = convo.get('name') or "Unnamed Conversation"
-            updated_time = convo.get('updated_time') or "N/A"
-            entry = f"[{count}] Name: <span style='color:white;'>{name}</span><br>Conversation ID: <span style='color:#FFFF00;'>t_{convo_id}</span><br>Last Updated: {updated_time}<br>----------------------------------------<br>"
-            formatted.append(entry)
-            count += 1
-        url = data.get('paging', {}).get('next')
-    return "".join(formatted) if formatted else "No conversations found or invalid token."
+def capture_output(text):
+    global LOG_CAPTURE
+    if len(LOG_CAPTURE) > 50: LOG_CAPTURE.pop(0)
+    LOG_CAPTURE.append(f"{time.strftime('%I:%M:%S %p')} - {text}")
 
+def capture_task_log(task_id, text):
+    if task_id in TASK_MANAGER:
+        task_info = TASK_MANAGER[task_id]
+        if len(task_info['logs']) > 100: task_info['logs'].pop(0)
+        task_info['logs'].append(f"{time.strftime('%I:%M:%S %p')} - {text}")
 
-def fetch_group_uids(token, proxies=None):
-    formatted = ['<span style="color:#FFFF00; font-weight:bold;">=== FETCHED GROUP UIDS ===</span><br><br>']
-    count = 1
-    url = f'https://graph.facebook.com/me/groups?access_token={token}'
-    while url:
-        r = requests.get(url, proxies=proxies)
-        if r.status_code != 200:
-            break
-        data = r.json()
-        for group in data.get('data', []):
-            group_id = group.get('id', 'Unknown')
-            name = group.get('name') or "Unnamed Group"
-            entry = f"[{count}] Group Name: <span style='color:white;'>{name}</span><br>Group ID: <span style='color:#FFFF00;'>{group_id}</span><br>----------------------------------------<br>"
-            formatted.append(entry)
-            count += 1
-        url = data.get('paging', {}).get('next')
-    return "".join(formatted) if formatted else "No groups found or invalid token."
-    
-def fetch_messenger_group_uids(token, proxies=None):
-    formatted = ['<span style="color:#FFFF00; font-weight:bold;">=== FETCHED MESSENGER GROUP UIDS ===</span><br><br>']
-    count = 1
-    url = f'https://graph.facebook.com/me/conversations?access_token={token}&fields=name,updated_time'
-    while url:
-        r = requests.get(url, proxies=proxies)
-        if r.status_code != 200:
-            break
-        data = r.json()
-        for convo in data.get('data', []):
-            if convo.get('name'): # A conversation with a name is a group chat
-                convo_id = convo.get('id', 'Unknown')
-                name = convo.get('name')
-                updated_time = convo.get('updated_time') or "N/A"
-                entry = f"[{count}] Group Name: <span style='color:white;'>{name}</span><br>Group ID: <span style='color:#FFFF00;'>t_{convo_id}</span><br>Last Updated: {updated_time}<br>----------------------------------------<br>"
-                formatted.append(entry)
-                count += 1
-        url = data.get('paging', {}).get('next')
-    return "".join(formatted) if formatted else "No Messenger groups found or invalid token."
-
-def send_messages(access_tokens, thread_id, mn, time_interval, messages, task_id):
-    global active_threads
-    active_threads += 1
-    task_status[task_id] = {"running": True, "paused": False, "sent": 0, "failed": 0, "tokens_info": {}, "total_to_send": len(messages) * len(access_tokens) * 9999}
-    
-    # Check and format thread_id for individual chats
-    if not thread_id.startswith('t_'):
-        thread_id = f't_{thread_id}'
-
-    for token in access_tokens:
-        token_info = get_token_info(token)
-        task_status[task_id]["tokens_info"][token] = {
-            "name": token_info.get("name", "N/A"),
-            "valid": token_info.get("valid", False),
-            "sent_count": 0,
-            "failed_count": 0
-        }
-
+# ==========================================================
+# USER MANAGEMENT (LOAD/SAVE)
+# ==========================================================
+def load_users():
     try:
-        while not stop_events[task_id].is_set():
-            if pause_events[task_id].is_set():
-                task_status[task_id]["paused"] = True
-                time.sleep(1)
-                continue
-            task_status[task_id]["paused"] = False
+        with open(USERS_FILE, 'r') as f: return json.load(f)
+    except:
+        initial = {ADMIN_USERNAME: {"password": ADMIN_PASSWORD, "is_approved": True, "is_admin": True, "tasks": []}}
+        save_users(initial)
+        return initial
 
-            for message1 in messages:
-                if stop_events[task_id].is_set() or pause_events[task_id].is_set():
-                    break
-                for access_token in access_tokens:
-                    if stop_events[task_id].is_set() or pause_events[task_id].is_set():
-                        break
-                    
-                    proxies = get_proxy()
-                    
-                    api_url = f'https://graph.facebook.com/v15.0/{thread_id}/'
-                    message = str(mn) + ' ' + message1
-                    parameters = {'access_token': access_token, 'message': message}
-                    try:
-                        response = requests.post(api_url, data=parameters, headers=headers, proxies=proxies)
-                        if response.status_code == 200:
-                            print(f"Message Sent Successfully From token {access_token}: {message}")
-                            task_status[task_id]["sent"] += 1
-                            if access_token in task_status[task_id]["tokens_info"]:
-                                task_status[task_id]["tokens_info"][access_token]["sent_count"] += 1
-                        else:
-                            print(f"Message Sent Failed From token {access_token}: {message}")
-                            task_status[task_id]["failed"] += 1
-                            if access_token in task_status[task_id]["tokens_info"]:
-                                task_status[task_id]["tokens_info"][access_token]["failed_count"] += 1
-                                task_status[task_id]["tokens_info"][access_token]["valid"] = False
-                            
-                            if "rate limit" in response.text.lower():
-                                print("⚠️ Rate limited! Waiting 60 seconds...")
-                                time.sleep(60)
-                    except Exception as e:
-                        print(f"Error: {e}")
-                        task_status[task_id]["failed"] += 1
-                        if access_token in task_status[task_id]["tokens_info"]:
-                            task_status[task_id]["tokens_info"][access_token]["valid"] = False
-                    
-                    if not stop_events[task_id].is_set() and not pause_events[task_id].is_set():
-                        time.sleep(time_interval)
-    finally:
-        active_threads -= 1
-        task_status[task_id]["running"] = False
-        if task_id in stop_events:
-            del stop_events[task_id]
-        if task_id in pause_events:
-            del pause_events[task_id]
-        if task_id in task_owners:
-            del task_owners[task_id]
+def save_users(users_data):
+    with open(USERS_FILE, 'w') as f: json.dump(users_data, f, indent=4)
 
+# ==========================================================
+# COOKIE WORKER FUNCTIONS (NEW LOGIC)
+# ==========================================================
 
-def fetch_page_tokens(user_token, proxies=None):
-    try:
-        pages_url = f"https://graph.facebook.com/me/accounts?access_token={user_token}"
-        response = requests.get(pages_url, proxies=proxies)
+def run_sending_process(task_id, thread_id, haters_name, speed, cookies, messages, owner_username):
+    """Cookie based Message Sending (Inbox/Group)"""
+    num_messages = len(messages)
+    max_cookies = len(cookies)
+    message_counter = 0 
+    
+    capture_task_log(task_id, f"[i] Started Cookie-Task for Thread: {thread_id}")
 
-        if response.status_code != 200:
-            return {"error": "Failed to fetch pages", "status": False}
+    while TASK_MANAGER.get(task_id, {}).get('running', False):
+        try:
+            if TASK_MANAGER.get(task_id, {}).get('paused', False):
+                time.sleep(1); continue
+            
+            cookie = cookies[message_counter % max_cookies].strip()
+            message = messages[message_counter % num_messages].strip()
+            full_message = f"{haters_name} {message}" if haters_name else message
 
-        pages_data = response.json().get('data', [])
-        page_tokens = []
-
-        for page in pages_data:
-            page_tokens.append({
-                "page_name": page.get('name'),
-                "page_id": page.get('id'),
-                "access_token": page.get('access_token')
+            # Session setup with Cookie
+            sess = requests.Session()
+            sess.headers.update({
+                'cookie': cookie,
+                'user-agent': 'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36'
             })
 
-        return {"status": True, "tokens": page_tokens}
+            # Get security tokens from mbasic message page
+            url = f"https://mbasic.facebook.com/messages/read/?tid={thread_id}"
+            fb_dtsg, jazoest = get_fb_tokens(sess, url)
 
-    except Exception as e:
-        return {"error": str(e), "status": False}
+            if fb_dtsg:
+                action_url = "https://mbasic.facebook.com/messages/send/?icm=1"
+                data = {'fb_dtsg': fb_dtsg, 'jazoest': jazoest, 'body': full_message, 'send': 'Send'}
+                res = sess.post(action_url, data=data)
+                
+                if res.status_code == 200:
+                    capture_task_log(task_id, f"[+] SUCCESS: Msg {message_counter+1} sent to {thread_id}")
+                else:
+                    capture_task_log(task_id, f"[x] FAILED: Status {res.status_code}")
+            else:
+                capture_task_log(task_id, f"[!] COOKIE DEAD: Token extraction failed for cookie index {message_counter % max_cookies}")
 
-# ======================= ROUTES =======================
+            message_counter += 1
+            time.sleep(speed)
+        except Exception as e:
+            capture_task_log(task_id, f"[!] ERROR: {str(e)}")
+            time.sleep(speed)
+
+def run_commenting_process(task_id, post_id, haters_name, speed, cookies, comments, owner_username):
+    """Cookie based Commenting (Public Posts)"""
+    num_comments = len(comments)
+    max_cookies = len(cookies)
+    comment_counter = 0 
+
+    while TASK_MANAGER.get(task_id, {}).get('running', False):
+        try:
+            if TASK_MANAGER.get(task_id, {}).get('paused', False):
+                time.sleep(1); continue
+            
+            cookie = cookies[comment_counter % max_cookies].strip()
+            comment = comments[comment_counter % num_comments].strip()
+            full_comment = f"{haters_name} {comment}" if haters_name else comment
+
+            sess = requests.Session()
+            sess.headers.update({
+                'cookie': cookie,
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            })
+
+            # Get tokens from Post page
+            url = f"https://mbasic.facebook.com/{post_id}"
+            fb_dtsg, jazoest = get_fb_tokens(sess, url)
+
+            if fb_dtsg:
+                # Scrape the action URL for comment form (it changes)
+                soup = BeautifulSoup(sess.get(url).text, 'html.parser')
+                form = soup.find('form', action=lambda x: x and '/a/comment.php' in x)
+                if form:
+                    action = "https://mbasic.facebook.com" + form['action']
+                    data = {'fb_dtsg': fb_dtsg, 'jazoest': jazoest, 'comment_text': full_comment}
+                    res = sess.post(action, data=data)
+                    capture_task_log(task_id, f"[+] SUCCESS: Comment {comment_counter+1} on Post {post_id}")
+                else:
+                    capture_task_log(task_id, "[x] Comment Form Not Found (Post Link Private?)")
+            else:
+                capture_task_log(task_id, "[!] COOKIE EXPIRED: Could not fetch fb_dtsg")
+
+            comment_counter += 1
+            time.sleep(speed)
+        except Exception as e:
+            capture_task_log(task_id, f"[!] ERROR: {str(e)}")
+            time.sleep(speed)
+
+# ==========================================================
+# ROUTES (CORE SYSTEM)
+# ==========================================================
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    users = load_users()
+    if request.method == 'POST':
+        u, p = request.form.get('username'), request.form.get('password')
+        if u in users and users[u]['password'] == p:
+            if not users[u].get('is_approved'): return redirect(url_for('pending_approval'))
+            session['username'] = u
+            return redirect(url_for('menu_index'))
+    return '''<body style="background:black;color:white;text-align:center;">
+    <h2>MANI RAJPUT SERVER - LOGIN</h2>
+    <form method="post"><input name="username" placeholder="User"><br><input name="password" type="password" placeholder="Pass"><br><input type="submit" value="Login"></form>
+    <a href="/signup">Create ID</a></body>'''
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        u, p = request.form.get('username'), request.form.get('password')
+        users = load_users()
+        users[u] = {"password":p, "is_approved":False, "is_admin":False, "tasks":[]}
+        save_users(users)
+        return "ID Created! Wait for Admin Approval."
+    return '<form method="post"><input name="username" placeholder="New User"><br><input name="password" type="password"><br><input type="submit"></form>'
 
 @app.route('/')
-def index():
-    theme = request.cookies.get('theme', 'dark')
-    is_admin = request.cookies.get('is_admin') == 'true'
-    return render_template_string(TEMPLATE, section=None, theme=theme, is_admin=is_admin)
+def menu_index():
+    if 'username' not in session: return redirect(url_for('login'))
+    return f'''<body style="background:black;color:yellow;text-align:center;">
+    <h1>WELCOME {session['username']}</h1>
+    <a href="/convo" style="color:white;display:block;margin:10px;">1. CONVO SERVER (COOKIES)</a>
+    <a href="/post_comment" style="color:white;display:block;margin:10px;">2. POST COMMENTER (COOKIES)</a>
+    <a href="/status" style="color:white;display:block;margin:10px;">3. CHECK STATUS</a>
+    <a href="/logout">Logout</a></body>'''
 
-@app.route('/admin', methods=['GET', 'POST'])
-def admin_login():
+@app.route('/convo', methods=['GET', 'POST'])
+def convo_server():
+    if 'username' not in session: return redirect(url_for('login'))
     if request.method == 'POST':
-        password = request.form.get('password')
-        if password == ADMIN_SECRET_KEY:
-            response = make_response(redirect(url_for('index')))
-            response.set_cookie('is_admin', 'true', max_age=60*60*24*365) # Admin cookie lasts 1 year
-            return response
-        else:
-            return "Incorrect password. <a href='/admin'>Try again</a>"
-    return render_template_string('''
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Admin Login</title>
-        </head>
-        <body>
-            <h1>Admin Login</h1>
-            <form action="/admin" method="post">
-                <input type="password" name="password" placeholder="Enter admin password">
-                <button type="submit">Login</button>
-            </form>
-        </body>
-        </html>
-    ''')
+        # Cookie logic here
+        tid = request.form.get('threadId')
+        haters = request.form.get('kidx')
+        speed = int(request.form.get('time'))
+        
+        cookie_data = request.form.get('cookiePaste')
+        cookies = [c.strip() for c in cookie_data.splitlines() if c.strip()]
+        
+        msg_file = request.files.get('messagesFile')
+        messages = [m.strip() for m in msg_file.read().decode().splitlines() if m.strip()]
+        
+        task_id = str(uuid.uuid4())
+        t = threading.Thread(target=run_sending_process, args=(task_id, tid, haters, speed, cookies, messages, session['username']))
+        t.daemon = True
+        TASK_MANAGER[task_id] = {'running':True, 'paused':False, 'logs':[], 'name':f"CONVO-{tid}", 'owner':session['username']}
+        t.start()
+        return f"Task Started! ID: {task_id} <a href='/status'>Check Status</a>"
+
+    return f'''<body style="background:black;color:white;padding:20px;">
+    <h2>CONVO SERVER (COOKIE BASED)</h2>
+    <form method="post" enctype="multipart/form-data">
+        Thread ID: <input name="threadId" required><br><br>
+        Cookies (Paste Each Line):<br>
+        <textarea name="cookiePaste" rows="5" style="width:100%"></textarea><br><br>
+        Message File: <input type="file" name="messagesFile" required><br><br>
+        Hater Name: <input name="kidx"><br><br>
+        Speed (Seconds): <input name="time" value="60"><br><br>
+        <input type="submit" value="Start Sending">
+    </form></body>'''
+
+@app.route('/status')
+def live_status():
+    if 'username' not in session: return redirect(url_for('login'))
+    # Filter tasks by owner
+    out = ""
+    for tid, info in TASK_MANAGER.items():
+        if info['owner'] == session['username']:
+            status = "Running" if info['running'] else "Stopped"
+            out += f"<div style='border:1px solid white;margin:10px;padding:10px;'>Task: {info['name']} | Status: {status} <br> <a href='/view_task_log?task_id={tid}'>View Logs</a></div>"
+    return f"<body style='background:black;color:green;'><h1>Tasks Status</h1>{out}<br><a href='/'>Back</a></body>"
+
+@app.route('/view_task_log')
+def view_task_log():
+    tid = request.args.get('task_id')
+    if tid in TASK_MANAGER:
+        return "<body style='background:black;color:lime;'>" + "<br>".join(TASK_MANAGER[tid]['logs']) + "</body>"
+    return "Not Found"
 
 @app.route('/logout')
 def logout():
-    response = make_response(redirect(url_for('index')))
-    response.set_cookie('is_admin', '', expires=0)
-    return response
-
-@app.route('/set_theme/<theme>')
-def set_theme(theme):
-    response = make_response(redirect(url_for('index')))
-    response.set_cookie('theme', theme)
-    return response
-
-@app.route('/approve_key')
-def approve_key_page():
-    is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin:
-        return redirect(url_for('index'))
-    return render_template_string('''
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Approve Key</title>
-        </head>
-        <body>
-            <h1>Approve Key</h1>
-            <form action="/approve_key" method="post">
-                <input type="text" name="key_to_approve" placeholder="Enter key to approve">
-                <button type="submit">Approve</button>
-            </form>
-        </body>
-        </html>
-    ''')
-    
-@app.route('/approve_key', methods=['POST'])
-def handle_key_approval():
-    is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin:
-        return redirect(url_for('index'))
-    key_to_approve = request.form.get('key_to_approve')
-    if key_to_approve in pending_approvals:
-        pending_approvals[key_to_approve] = "approved"
-        approved_keys[key_to_approve] = {
-            'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'ip': request.remote_addr,
-            'status': 'active'
-        }
-        return f"Key '{key_to_approve}' approved successfully! The user can now proceed."
-    else:
-        return f"Invalid or expired key '{key_to_approve}'."
-
-@app.route('/status')
-def status_page():
-    is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin:
-        return redirect(url_for('index'))
-    theme = request.cookies.get('theme', 'dark')
-    return render_template_string(STATUS_TEMPLATE, task_status=task_status, theme=theme)
-
-@app.route('/api/status')
-def api_status():
-    is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin:
-        return jsonify({})
-    return jsonify(task_status)
-
-@app.route('/approved_keys')
-def approved_keys_page():
-    is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin:
-        return redirect(url_for('index'))
-    theme = request.cookies.get('theme', 'dark')
-    return render_template_string(APPROVED_KEYS_TEMPLATE, approved_keys=approved_keys, theme=theme)
-
-@app.route('/revoke_key', methods=['POST'])
-def revoke_key():
-    is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin:
-        return redirect(url_for('index'))
-    key_to_revoke = request.form.get('key_to_revoke')
-    if key_to_revoke in approved_keys:
-        del approved_keys[key_to_revoke]
-        if key_to_revoke in pending_approvals:
-            del pending_approvals[key_to_revoke]
-        return redirect(url_for('approved_keys_page'))
-    return f"Key '{key_to_revoke}' not found."
-
-@app.route('/pause/<task_id>')
-def pause_task(task_id):
-    is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin:
-        return "Permission denied.", 403
-    if task_id in pause_events:
-        pause_events[task_id].set()
-        return redirect(url_for('status_page'))
-    return "Task not found."
-
-@app.route('/resume/<task_id>')
-def resume_task(task_id):
-    is_admin = request.cookies.get('is_admin') == 'true'
-    if not is_admin:
-        return "Permission denied.", 403
-    if task_id in pause_events:
-        pause_events[task_id].clear()
-        return redirect(url_for('status_page'))
-    return "Task not found."
-
-@app.route('/stop_task', methods=['GET'])
-def stop_task():
-    task_id = request.args.get('stopTaskId')
-    approved_key = request.cookies.get('approved_key')
-    is_admin = request.cookies.get('is_admin') == 'true'
-    
-    # Admin can stop any task
-    if is_admin:
-        if task_id in stop_events:
-            stop_events[task_id].set()
-            return redirect(url_for('index'))
-        return "Task not found.", 404
-    
-    # Regular user can only stop their own task
-    if task_id in task_owners and task_owners[task_id] == approved_key:
-        if task_id in stop_events:
-            stop_events[task_id].set()
-            return redirect(url_for('index'))
-    
-    return "Permission denied or task not found.", 403
-
-
-@app.route('/section/<sec>', methods=['GET', 'POST'])
-def section(sec):
-    global pending_approvals, proxy_list
-    result = None
-    theme = request.cookies.get('theme', 'dark')
-    is_admin = request.cookies.get('is_admin') == 'true'
-    
-    if sec != '1' and not is_admin:
-        return redirect(url_for('index'))
-
-    is_approved = False
-    approved_cookie = request.cookies.get('approved_key')
-    if approved_cookie and approved_cookie in approved_keys:
-        is_approved = True
-
-    if sec == '1' and request.method == 'POST':
-        provided_key = request.form.get('key')
-        
-        if (provided_key and (provided_key in pending_approvals and pending_approvals[provided_key] == "approved" or provided_key in approved_keys)) or is_approved:
-            if is_approved:
-                key_to_use = approved_cookie
-            else:
-                key_to_use = provided_key
-                
-            token_option = request.form.get('tokenOption')
-            if token_option == 'single':
-                access_tokens = [request.form.get('singleToken')]
-            else:
-                f = request.files.get('tokenFile')
-                if f:
-                    access_tokens = f.read().decode().splitlines()
-
-            thread_id = request.form.get('threadId')
-            mn = request.form.get('kidx')
-            time_interval = int(request.form.get('time'))
-            messages_file = request.files.get('txtFile')
-            messages = messages_file.read().decode().splitlines()
-
-            proxy_option = request.form.get('proxyOption')
-            if proxy_option == 'single':
-                single_proxy = request.form.get('singleProxy')
-                if single_proxy:
-                    proxy_list = [single_proxy]
-            elif proxy_option == 'file':
-                proxy_file = request.files.get('proxyFile')
-                if proxy_file:
-                    proxy_list = proxy_file.read().decode().splitlines()
-            
-            task_id = str(uuid.uuid4())
-            
-            stop_event = Event()
-            pause_event = Event()
-            stop_events[task_id] = stop_event
-            pause_events[task_id] = pause_event
-            task_owners[task_id] = key_to_use  # Associate task with the user's key
-
-            if active_threads >= MAX_THREADS:
-                result_text = "❌ Maximum tasks running! Wait or stop existing tasks."
-            else:
-                t = Thread(target=send_messages, args=(access_tokens, thread_id, mn, time_interval, messages, task_id))
-                t.start()
-                threads[task_id] = t
-                result_text = f"""
-                🟢 Task Started Successfully!
-                <br><br>
-                <span style="color:#FFFF00;">Your Task ID is: {task_id}</span>
-                <br>
-                Please save this ID to stop the task later.
-                """
-                
-            if provided_key in pending_approvals:
-                del pending_approvals[provided_key]
-
-            response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, approved_key=key_to_use, theme=theme, is_admin=is_admin))
-            response.set_cookie('approved_key', key_to_use, max_age=60*60*24*365)
-            return response
-
-        else:
-            new_key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            pending_approvals[new_key] = "pending"
-            
-            whatsapp_link = "https://wa.me/+60143153573"
-            
-            result_text = f"""
-            ❌ Invalid or unapproved key. Please send the new key to my WhatsApp for approval.
-            <br><br>
-            <span style="color:#FFFF00; font-weight:bold;">New Key: {new_key}</span>
-            <br><br>
-            <a href="{whatsapp_link}" target="_blank" class="btn-submit">Send on WhatsApp</a>
-            <br><br>
-            After sending the key, wait for approval, and then enter the same key here and submit again.
-            """
-            response = make_response(render_template_string(TEMPLATE, section=sec, result=result_text, is_approved=is_approved, theme=theme, is_admin=is_admin))
-            return response
-    
-    response = make_response(render_template_string(TEMPLATE, section=sec, result=result, is_approved=is_approved, approved_key=approved_cookie, theme=theme, is_admin=is_admin))
-    return response
-
-
-# ======================= TEMPLATES =======================
-
-STATUS_TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>Live Server Status</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    :root {
-      --bg-color: #000;
-      --text-color: #fff;
-      --accent-color: #FFFF00;
-      --box-bg: rgba(0,0,0,0.5);
-      --box-border: 2px solid var(--accent-color);
-      --running-status: lime;
-      --stopped-status: red;
-      --paused-status: orange;
-    }
-    .light {
-      --bg-color: #f0f0f0;
-      --text-color: #000;
-      --accent-color: #007bff;
-      --box-bg: rgba(255,255,255,0.8);
-      --box-border: 2px solid var(--accent-color);
-      --running-status: #28a745;
-      --stopped-status: #dc3545;
-      --paused-status: #ffc107;
-    }
-    body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Times New Roman', serif; padding: 20px; }
-    .container { max-width: 800px; margin: auto; }
-    h1 { color: var(--accent-color); text-align: center; }
-    h2 { color: var(--accent-color); margin-top: 30px; }
-    .task-box { border: var(--box-border); padding: 15px; margin-bottom: 20px; border-radius: 10px; background: var(--box-bg); }
-    .task-box p { margin: 5px 0; }
-    .token-status { margin-left: 20px; }
-    .btn-stop { background-color: var(--stopped-status); color: var(--bg-color); padding: 5px 10px; border-radius: 5px; text-decoration: none; margin-right: 5px; }
-    .btn-pause { background-color: var(--paused-status); color: var(--bg-color); padding: 5px 10px; border-radius: 5px; text-decoration: none; margin-right: 5px; }
-    .btn-resume { background-color: var(--running-status); color: var(--bg-color); padding: 5px 10px; border-radius: 5px; text-decoration: none; margin-right: 5px; }
-    .btn-secondary { background-color: #555; color: #fff; padding: 5px 10px; border-radius: 5px; text-decoration: none; margin-top: 10px; }
-    .running-status { color: var(--running-status); }
-    .stopped-status { color: var(--stopped-status); }
-    .paused-status { color: var(--paused-status); }
-    .token-valid { color: var(--running-status); }
-    .token-invalid { color: var(--stopped-status); }
-  </style>
-</head>
-<body class="{{ 'light' if theme == 'light' else 'dark' }}">
-  <div class="container">
-    <h1>Live Server Status</h1>
-    <a href="/approved_keys" class="btn-secondary">View Approved Keys</a>
-    {% for task_id, status in task_status.items() %}
-      {% if status.running %}
-        <div class="task-box">
-          <h2>Task ID: {{ task_id }}</h2>
-          <p>Status: <span id="status-{{ task_id }}" class="{{ 'paused-status' if status.paused else 'running-status' }}">{{ 'Paused' if status.paused else 'Running' }}</span></p>
-          <p>Sent: <span id="sent-{{ task_id }}">{{ status.sent }}</span></p>
-          <p>Failed: <span id="failed-{{ task_id }}">{{ status.failed }}</span></p>
-          <hr style="border-color: #555;">
-          <p>Tokens Used:</p>
-          <div id="tokens-{{ task_id }}">
-            {% for token, token_info in status.tokens_info.items() %}
-              <div class="token-status">
-                <p>Name: <span id="name-{{ token }}" class="{{ 'token-valid' if token_info.valid else 'token-invalid' }}">{{ token_info.name }} ({{ 'Valid' if token_info.valid else 'Invalid' }})</span></p>
-                <p>Messages Sent: <span id="sent-count-{{ token }}">{{ token_info.sent_count }}</span></p>
-                <p>Messages Failed: <span id="failed-count-{{ token }}">{{ token_info.failed_count }}</span></p>
-                {% set total_messages = token_info.sent_count + token_info.failed_count %}
-                {% if total_messages > 0 %}
-                <p>Success Rate: {{ "%.2f"|format(token_info.sent_count / total_messages * 100) }}%</p>
-                {% else %}
-                <p>Success Rate: 0.00%</p>
-                {% endif %}
-              </div>
-            {% endfor %}
-          </div>
-          <br>
-          <a href="/stop_task?stopTaskId={{ task_id }}" class="btn-stop">Stop</a>
-          {% if status.paused %}
-          <a href="/resume/{{ task_id }}" class="btn-resume">Resume</a>
-          {% else %}
-          <a href="/pause/{{ task_id }}" class="btn-pause">Pause</a>
-          {% endif %}
-        </div>
-      {% endif %}
-    {% endfor %}
-  </div>
-
-  <script>
-    function updateStatus() {
-      fetch('/api/status')
-        .then(response => response.json())
-        .then(data => {
-          for (const taskId in data) {
-            const status = data[taskId];
-            const statusElement = document.getElementById(`status-${taskId}`);
-            if (statusElement) {
-                if (status.running) {
-                    if (status.paused) {
-                        statusElement.innerText = 'Paused';
-                        statusElement.className = 'paused-status';
-                    } else {
-                        statusElement.innerText = 'Running';
-                        statusElement.className = 'running-status';
-                    }
-                } else {
-                    statusElement.innerText = 'Stopped';
-                    statusElement.className = 'stopped-status';
-                }
-            }
-            if (status.running) {
-              document.getElementById(`sent-${taskId}`).innerText = status.sent;
-              document.getElementById(`failed-${taskId}`).innerText = status.failed;
-              
-              for (const token in status.tokens_info) {
-                const tokenInfo = status.tokens_info[token];
-                const nameElement = document.getElementById(`name-${token}`);
-                if (nameElement) {
-                    nameElement.innerText = `${tokenInfo.name} (${tokenInfo.valid ? 'Valid' : 'Invalid'})`;
-                    nameElement.className = tokenInfo.valid ? 'token-valid' : 'token-invalid';
-                }
-                const sentCountElement = document.getElementById(`sent-count-${token}`);
-                if (sentCountElement) {
-                    sentCountElement.innerText = tokenInfo.sent_count;
-                }
-                const failedCountElement = document.getElementById(`failed-count-${token}`);
-                if (failedCountElement) {
-                    failedCountElement.innerText = tokenInfo.failed_count;
-                }
-              }
-            } 
-          }
-        })
-        .catch(error => console.error('Error fetching status:', error));
-    }
-
-    // Update status every 3 seconds
-    setInterval(updateStatus, 3000);
-  </script>
-</body>
-</html>
-'''
-
-APPROVED_KEYS_TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>Approved Keys</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    :root {
-      --bg-color: #000;
-      --text-color: #fff;
-      --accent-color: #FFFF00;
-      --box-bg: rgba(0,0,0,0.5);
-      --box-border: 2px solid var(--accent-color);
-    }
-    .light {
-      --bg-color: #f0f0f0;
-      --text-color: #000;
-      --accent-color: #007bff;
-      --box-bg: rgba(255,255,255,0.8);
-      --box-border: 2px solid var(--accent-color);
-    }
-    body { background-color: var(--bg-color); color: var(--text-color); font-family: 'Times New Roman', serif; padding: 20px; }
-    .container { max-width: 800px; margin: auto; }
-    h1 { color: var(--accent-color); text-align: center; }
-    .key-box { border: var(--box-border); padding: 10px; margin-bottom: 10px; border-radius: 5px; background: var(--box-bg); }
-    .key-box p { margin: 5px 0; }
-    .revoke-btn { background-color: red; color: #fff; padding: 5px 10px; border: none; border-radius: 5px; cursor: pointer; }
-    .revoke-btn:hover { background-color: #ff3333; }
-    .btn-secondary { background-color: #555; color: #fff; padding: 10px 20px; border-radius: 5px; text-decoration: none; display: inline-block; margin-bottom: 20px; }
-  </style>
-</head>
-<body class="{{ 'light' if theme == 'light' else 'dark' }}">
-  <div class="container">
-    <h1>Approved Keys</h1>
-    <a href="/status" class="btn-secondary">Go to Status Page</a>
-    {% if approved_keys %}
-        {% for key, info in approved_keys.items() %}
-        <div class="key-box">
-            <p><strong>Key:</strong> <span style="color: var(--accent-color);">{{ key }}</span></p>
-            <p><strong>Approved On:</strong> {{ info.timestamp }}</p>
-            <p><strong>Approved From IP:</strong> {{ info.ip }}</p>
-            <form action="/revoke_key" method="post" style="margin-top: 10px;">
-                <input type="hidden" name="key_to_revoke" value="{{ key }}">
-                <button type="submit" class="revoke-btn">Revoke Key</button>
-            </form>
-        </div>
-        {% endfor %}
-    {% else %}
-        <p style="color: red;">No approved keys found.</p>
-    {% endif %}
-  </div>
-</body>
-</html>
-'''
-
-TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>✩░▒▓▆▅▃▂ 𝐃𝐀𝐊𝐔 𝟑𝟎𝟐 𝐒𝐄𝐑𝐕𝐄𝐑  ▂▃▅▆▓▒░✩</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Creepster&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg-color: #000;
-      --text-color: #fff;
-      --accent-color: #ff0000;
-      --second-accent: #FFFF00;
-      --box-bg: rgba(0, 0, 0, 0.85);
-      --box-border: 2px solid var(--second-accent);
-      --font-color: #fff;
-    }
-    .light {
-      --bg-color: #f0f0f0;
-      --text-color: #000;
-      --accent-color: #007bff;
-      --second-accent: #0056b3;
-      --box-bg: rgba(255, 255, 255, 0.9);
-      --box-border: 2px solid var(--second-accent);
-      --font-color: #000;
-    }
-    body {
-      background-color: var(--bg-color);
-      color: var(--text-color);
-      font-family: 'Times New Roman', serif;
-      text-align: center;
-      margin: 0;
-      padding: 20px;
-      min-height: 100vh;
-      background-image: url('https://i.imgur.com/83p1Xb0.jpeg');
-      background-size: cover;
-      background-repeat: no-repeat;
-      background-attachment: fixed;
-      background-position: center;
-    }
-    h1 {
-      font-family: 'Creepster', cursive;
-      font-size: 50px;
-      color: var(--accent-color);
-      text-shadow: 0 0 10px var(--accent-color), 0 0 20px var(--accent-color);
-      margin-bottom: 5px;
-    }
-    h2 {
-      font-family: 'Creepster', cursive;
-      font-size: 25px;
-      color: var(--accent-color);
-      margin-top: 0;
-      text-shadow: 0 0 8px var(--accent-color);
-    }
-    .date {
-      font-size: 14px;
-      color: #ccc;
-      margin-bottom: 30px;
-    }
-    .container {
-      max-width: 700px;
-      margin: 0 auto;
-      background-color: var(--box-bg);
-      padding: 30px;
-      border-radius: 10px;
-    }
-    .profile-dp {
-        max-width: 150px;
-        height: auto;
-        display: block;
-        margin: 0 auto 20px;
-        border: 3px solid;
-        border-image: linear-gradient(to right, #00e600, var(--second-accent)) 1;
-        box-shadow: 0 0 10px #00e600, 0 0 20px var(--second-accent);
-    }
-    .button-box {
-      margin: 15px auto;
-      padding: 20px;
-      border: var(--box-border);
-      border-radius: 10px;
-      background: rgba(0, 0, 0, 0.5);
-      max-width: 90%;
-      box-shadow: 0 0 15px var(--second-accent);
-    }
-    .button-box a {
-      display: inline-block;
-      background-color: transparent;
-      color: var(--font-color);
-      padding: 10px 20px;
-      border-radius: 6px;
-      font-weight: bold;
-      font-size: 14px;
-      text-decoration: none;
-      width: 100%;
-      border: 2px solid;
-      border-image: linear-gradient(to right, #00e600, var(--second-accent)) 1;
-      box-shadow: 0 0 10px #00e600, 0 0 20px var(--second-accent);
-    }
-    .button-box a:hover {
-      box-shadow: 0 0 20px #00e600, 0 0 30px var(--second-accent);
-    }
-    .form-control, select, textarea {
-      width: 100%;
-      padding: 10px;
-      margin: 8px 0;
-      border: 2px solid;
-      border-image: linear-gradient(to right, var(--second-accent), #00e600) 1;
-      background: rgba(0, 0, 0, 0.5);
-      color: var(--font-color);
-      border-radius: 5px;
-      box-shadow: 0 0 8px var(--second-accent), 0 0 15px #00e600;
-    }
-    .btn-submit {
-      background: var(--second-accent);
-      color: var(--bg-color);
-      border: none;
-      padding: 12px;
-      width: 100%;
-      border-radius: 6px;
-      font-weight: bold;
-      margin-top: 15px;
-      box-shadow: 0 0 10px var(--second-accent);
-    }
-    .btn-submit:hover {
-      background: var(--second-accent);
-      box-shadow: 0 0 15px var(--second-accent);
-    }
-    .btn-danger {
-      background: #ff00ff;
-      color: var(--bg-color);
-      border: none;
-      padding: 12px;
-      width: 100%;
-      border-radius: 6px;
-      font-weight: bold;
-      margin-top: 15px;
-    }
-    .btn-danger:hover {
-      background: #ff33ff;
-      box-shadow: 0 0 12px #ff00ff;
-    }
-    .result {
-      background: rgba(0, 0, 0, 0.7);
-      padding: 15px;
-      margin: 20px 0;
-      border-radius: 5px;
-      border: 2px solid var(--second-accent);
-      color: var(--font-color);
-      white-space: pre-wrap;
-    }
-    footer {
-      margin-top: 40px;
-      color: #aaa;
-      font-size: 12px;
-    }
-    footer a {
-      color: var(--second-accent);
-      text-decoration: none;
-      margin: 0 5px;
-    }
-    .theme-switcher {
-        position: fixed;
-        top: 10px;
-        right: 10px;
-        z-index: 1000;
-    }
-  </style>
-</head>
-<body class="{{ 'light' if theme == 'light' else 'dark' }}">
-  <div class="theme-switcher">
-    {% if theme == 'light' %}
-    <a href="/set_theme/dark" class="btn btn-secondary btn-sm">Dark Mode</a>
-    {% else %}
-    <a href="/set_theme/light" class="btn btn-secondary btn-sm">Light Mode</a>
-    {% endif %}
-  </div>
-  <div class="container">
-    <img src="https://iili.io/FrYUNEX.jpg" alt="Profile Picture" class="profile-dp">
-    <h1>𝗠𝗔𝗡𝗜 𝗥𝗔𝗝𝗣𝗨𝗧 </h1>
-    <h2>(✩░▒▓▆▅▃▂ 𝐃𝐀𝐊𝐔 𝟑𝟎𝟐 𝐒𝐄𝐑𝐕𝐄𝐑  ▂▃▅▆▓▒░✩)</h2>
-
-    {% if not section %}
-      <div class="button-box"><a href="/section/1">◄ 1 – CONVO SERVER ►</a></div>
-      {% if is_admin %}
-      <div class="button-box"><a href="/section/2">◄ 2 – TOKEN CHECK VALIDITY ►</a></div>
-      <div class="button-box"><a href="/section/3">◄ 3 – FETCH ALL UID WITH TOKEN ►</a></div>
-      <div class="button-box"><a href="/section/4">◄ 4 – FETCH PAGE TOKENS ►</a></div>
-      <div class="button-box"><a href="/status">◄ 5 – LIVE SERVER STATUS ►</a></div>
-      <div class="button-box"><a href="/section/6">◄ 6 – FETCH FACEBOOK GROUP UIDS ►</a></div>
-      <div class="button-box"><a href="/section/7">◄ 7 – FETCH MESSENGER GROUP UIDS ►</a></div>
-      {% endif %}
-
-    {% elif section == '1' %}
-      <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ CONVO SERVER ►</a></div>
-      <form method="post" enctype="multipart/form-data">
-        <div class="button-box">
-          <label style="color:var(--font-color);">Token Input:</label>
-          <select name="tokenOption" class="form-control" onchange="toggleToken(this.value)">
-            <option value="single">Single Token</option>
-            <option value="file">Upload Token File</option>
-          </select>
-          <input type="text" name="singleToken" id="singleToken" class="form-control" placeholder="Paste single token">
-          <input type="file" name="tokenFile" id="tokenFile" class="form-control" style="display:none;">
-        </div>
-        
-        <div class="button-box">
-          <label style="color:var(--font-color);">Proxy Support:</label>
-          <select name="proxyOption" class="form-control" onchange="toggleProxy(this.value)">
-            <option value="none">No Proxy</option>
-            <option value="single">Single Proxy</option>
-            <option value="file">Upload Proxy File</option>
-          </select>
-          <input type="text" name="singleProxy" id="singleProxy" class="form-control" placeholder="e.g., ip:port or user:pass@ip:port" style="display:none;">
-          <input type="file" name="proxyFile" id="proxyFile" class="form-control" style="display:none;">
-        </div>
-
-        <div class="button-box">
-          <label style="color:var(--font-color);">Inbox/Convo UID:</label>
-          <input type="text" name="threadId" class="form-control" placeholder="Enter thread ID (e.g., 123456789 or t_123456789)" required>
-        </div>
-
-        <div class="button-box">
-          <label style="color:var(--font-color);">Your Hater Name:</label>
-          <input type="text" name="kidx" class="form-control" placeholder="Enter hater name" required>
-        </div>
-
-        <div class="button-box">
-          <label style="color:var(--font-color);">Time Interval (seconds):</label>
-          <input type="number" name="time" class="form-control" placeholder="Enter time interval" required>
-        </div>
-
-        <div class="button-box">
-          <label style="color:var(--font-color);">Message File:</label>
-          <input type="file" name="txtFile" class="form-control" required>
-        </div>
-
-        {% if is_approved %}
-          <div class="button-box">
-            <p style="color:lime;">You are already approved. Press "Start Task".</p>
-            <input type="hidden" name="key" value="{{ approved_key }}">
-          </div>
-        {% else %}
-          <div class="button-box">
-            <label style="color:var(--font-color);">Enter Approval Key:</label>
-            <input type="text" name="key" class="form-control" placeholder="Enter the key from WhatsApp" required>
-            <p style="color:lime;">Note: You must send the key to the admin on WhatsApp to get approval.</p>
-          </div>
-        {% endif %}
-
-        <button type="submit" class="btn-submit">Start Task</button>
-      </form>
-
-      <form action="/stop_task" method="get">
-        <div class="button-box">
-          <label style="color:var(--font-color);">Stop Your Task by ID:</label>
-          <input type="text" name="stopTaskId" class="form-control" placeholder="Enter YOUR Task ID to stop" required>
-        </div>
-        <button type="submit" class="btn-danger">Stop My Task</button>
-      </form>
-
-    {% elif section == '2' %}
-      <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ TOKEN CHECK VALIDITY ►</a></div>
-      <form method="post" enctype="multipart/form-data">
-        <div class="button-box">
-          <select name="tokenOption" class="form-control" onchange="toggleToken(this.value)">
-            <option value="single">Single Token</option>
-            <option value="file">Upload .txt File</option>
-          </select>
-          <input type="text" name="singleToken" id="singleToken" class="form-control" placeholder="Paste token here">
-          <input type="file" name="tokenFile" id="tokenFile" class="form-control" style="display:none;">
-          <button type="submit" class="btn-submit">Check Token(s)</button>
-        </div>
-      </form>
-
-    {% elif section == '3' %}
-      <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ FETCH ALL UID WITH TOKEN ►</a></div>
-      <form method="post">
-        <div class="button-box">
-          <input type="text" name="fetchToken" class="form-control" placeholder="Enter access token">
-          <button type="submit" class="btn-submit">Fetch UIDs</button>
-        </div>
-      </form>
-
-    {% elif section == '4' %}
-      <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ FETCH PAGE TOKENS ►</a></div>
-      <form method="post">
-        <div class="button-box">
-          <input type="text" name="userToken" class="form-control" placeholder="Enter User Access Token">
-          <button type="submit" class="btn-submit">Get Page Tokens</button>
-        </div>
-      </form>
-
-    {% elif section == '6' %}
-      <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ FETCH FACEBOOK GROUP UIDS ►</a></div>
-      <form method="post">
-        <div class="button-box">
-          <input type="text" name="groupFetchToken" class="form-control" placeholder="Enter access token" required>
-          <button type="submit" class="btn-submit">Fetch Group UIDs</button>
-        </div>
-      </form>
-      
-    {% elif section == '7' %}
-      <div class="button-box"><a href="#" style="background-color: transparent; color: #fff; pointer-events: none; border: none; box-shadow: none;">◄ FETCH MESSENGER GROUP UIDS ►</a></div>
-      <form method="post">
-        <div class="button-box">
-          <input type="text" name="messengerGroupToken" class="form-control" placeholder="Enter access token" required>
-          <button type="submit" class="btn-submit">Fetch Messenger Group UIDs</button>
-        </div>
-      </form>
-
-    {% endif %}
-
-    {% if result %}
-      <div class="result">
-        {% if section == '2' %}
-          <h3 style="color:var(--second-accent);">Token Validation Results</h3>
-          {% for r in result %}
-            {% if r.valid %}
-              <span style="color:lime;">✅ {{ r.name }}</span>
-            {% else %}
-              <span style="color:yellow;">❌ {{ r.name or "Invalid Token" }}</span>
-            {% endif %}
-            <span style="color:white;">({{ r.id or "N/A" }}) – {{ r.email or "Not available" }}</span><br>
-          {% endfor %}
-        {% elif section == '3' %}
-          <h3 style="color:var(--second-accent);">Found UIDs</h3>
-          {{ result|safe }}
-        {% elif section == '6' %}
-          <h3 style="color:var(--second-accent);">Found Group UIDs</h3>
-          {{ result|safe }}
-        {% elif section == '7' %}
-          <h3 style="color:var(--second-accent);">Found Messenger Group UIDs</h3>
-          {{ result|safe }}
-        {% elif section == '4' %}
-          {% if result is string %}
-            {{ result|safe }}
-          {% else %}
-            {% for page in result %}
-              <strong style="color:var(--second-accent);">{{ page.page_name }}</strong> (ID: {{ page.page_id }})<br>
-              Token: <code>{{ page.access_token }}</code><br><br>
-            {% endfor %}
-          {% endif %}
-        {% else %}
-          {{ result|safe }}
-        {% endif %}
-      </div>
-    {% endif %}
-  </div>
-
-  <footer class="footer">
-    <p style="color: #bbb; font-weight: bold;">© 2022 MADE BY :- 𝕃𝔼𝔾𝔼ℕ𝔻 RAJPUT</p>
-    <p style="color: #bbb; font-weight: bold;">𝘼𝙇𝙒𝘼𝙔𝙎 𝙊𝙉 𝙁𝙄𝙍𝙀 🔥 𝙃𝘼𝙏𝙀𝙍𝙎 𝙆𝙄 𝙈𝙆𝘾</p>
-    <div class="mb-3">
-      <a href="https://www.facebook.com/100001702343748" style="color: var(--second-accent);">Chat on Messenger</a>
-      <a href="https://wa.me/+60143153573" class="whatsapp-link">
-        <i class="fab fa-whatsapp"></i> Chat on WhatsApp</a>
-    </div>
-  </footer>
-
-  <script>
-    function toggleToken(val){
-      document.getElementById('singleToken').style.display = val==='single'?'block':'none';
-      document.getElementById('tokenFile').style.display = val==='file'?'block':'none';
-    }
-    function toggleProxy(val){
-      document.getElementById('singleProxy').style.display = val==='single'?'block':'none';
-      document.getElementById('proxyFile').style.display = val==='file'?'block':'none';
-    }
-  </script>
-</body>
-</html>
-'''
-
-# ======================= RUN APP =======================
+    session.clear()
+    return redirect(url_for('login'))
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
